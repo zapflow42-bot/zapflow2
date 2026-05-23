@@ -1,0 +1,79 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isAuth()     { return request.auth != null; }
+    function uid()        { return request.auth.uid; }
+    function role()       { return request.auth.token.role; }
+    function tenantId()   { return request.auth.token.tenantId; }
+    function isGestor()   { return isAuth() && role() == "gestor"; }
+    function isOwner(r)   { return isAuth() && r.data.ownerId == uid(); }
+    function isTenant(r)  { return isAuth() && r.data.tenantId == tenantId(); }
+
+    // ── Usuários ──────────────────────────────────────────
+    match /users/{uid} {
+      allow read:   if isAuth() && (request.auth.uid == uid || isGestor());
+      allow create: if isGestor()
+        && request.resource.data.keys().hasOnly(
+          ["uid","email","displayName","role","tenantId","active","createdAt","stats"]);
+      allow update: if isGestor()
+        && request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(["active","displayName","stats"]);
+      allow delete: if false;
+    }
+
+    // ── Campanhas ─────────────────────────────────────────
+    match /campaigns/{id} {
+      allow read:   if isAuth() && (isOwner(resource) || isGestor());
+      allow create: if isAuth()
+        && request.resource.data.ownerId == uid()
+        && request.resource.data.keys().hasOnly([
+          "id","ownerId","name","template","channelType","senderId","status",
+          "totalContacts","sentCount","failCount","replyCount","subject",
+          "delayMin","delayMax","activeHours","createdAt","startedAt","completedAt"]);
+      allow update: if isAuth() && isOwner(resource)
+        && request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(["status","sentCount","failCount","replyCount","startedAt","completedAt"]);
+      allow delete: if isAuth() && isOwner(resource)
+        && resource.data.status in ["draft","stopped"];
+    }
+
+    // ── Contatos ──────────────────────────────────────────
+    match /contacts/{id} {
+      allow read, delete: if isAuth() && isOwner(resource);
+      allow create: if isAuth()
+        && request.resource.data.ownerId == uid()
+        && request.resource.data.keys().hasOnly(
+          ["id","ownerId","phoneNumber","email","telegramChatId","name","status","campaignId"]);
+      allow update: if isAuth() && isOwner(resource)
+        && request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(["status","repliedAt"]);
+    }
+
+    // ── Números WhatsApp ──────────────────────────────────
+    match /numbers/{id} {
+      allow read:   if isAuth() && (isOwner(resource) || isGestor());
+      allow create: if isAuth() && request.resource.data.ownerId == uid();
+      allow update: if isAuth() && isOwner(resource);
+      allow delete: if isAuth() && isOwner(resource);
+    }
+
+    // ── Contatos Telegram (opt-in público) ───────────────
+    match /telegram_contacts/{chatId} {
+      allow read:  if isGestor();
+      allow write: if false;   // apenas o backend (Admin SDK)
+    }
+
+    // ── Logs de disparo — só leitura ─────────────────────
+    match /dispatch_logs/{id} {
+      allow read:  if isAuth() && (resource.data.ownerId == uid() || isGestor());
+      allow write: if false;   // apenas o backend
+    }
+
+    // ── Sessões WhatsApp — apenas backend ─────────────────
+    match /sessions/{id} {
+      allow read:  if isAuth() && (resource.data.ownerId == uid() || isGestor());
+      allow write: if false;
+    }
+  }
+}

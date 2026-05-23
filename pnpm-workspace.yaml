@@ -1,0 +1,10 @@
+packages:
+  - "shared"
+  - "gateway"
+  - "module-*"
+  - "frontend"
+allowBuilds:
+  esbuild: true
+  msgpackr-extract: true
+  protobufjs: true
+  sharp: true
