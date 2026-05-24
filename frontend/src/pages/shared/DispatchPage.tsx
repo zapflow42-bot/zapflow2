@@ -109,6 +109,15 @@ export function DispatchPage() {
         if (ai.answer && !ai.answer.includes("IA não configurada") && !ai.answer.includes("Erro na IA") && !ai.answer.includes("ANTHROPIC_API_KEY")) baseMessage = ai.answer.trim()
       } catch {}
 
+      // Busca sessao mais recente para evitar sessionId desatualizado
+      let freshSenderId = account
+      try {
+        const freshData = await apiFetch("/api/whatsapp/sessions")
+        const freshSessions: string[] = freshData.sessions ?? []
+        const ownerPrefix = account.split("-").slice(0,5).join("-")
+        freshSenderId = freshSessions.find(s => s.startsWith(ownerPrefix)) ?? account
+      } catch {}
+
       const campaignId = `camp-${Date.now()}`
       const delayMs    = delay === "ia"
         ? (Math.floor(Math.random() * 14) + 8) * 1000
@@ -119,7 +128,7 @@ export function DispatchPage() {
         to:          c.phone,
         contactName: c.name,
         message:     baseMessage.replace(/\[\[nome\]\]/gi, c.name),
-        senderId:    account,
+        senderId:    freshSenderId,
         delay:       i * delayMs,
       }))
 
