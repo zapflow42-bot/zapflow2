@@ -35,9 +35,31 @@ export function ChannelsPage() {
   const [showModal, setShowModal]   = useState(false)
   const [qrData,    setQrData]      = useState<string | null>(null)
   const [qrLoading, setQrLoading]   = useState(false)
-  const [qrSession, setQrSession]   = useState<string | null>(null)
   const [form,      setForm]        = useState({ address: "", alias: "" })
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  // Carrega sessões ativas ao montar
+  useEffect(() => {
+    loadActiveSessions()
+  }, [])
+
+  async function loadActiveSessions() {
+    try {
+      const data = await apiFetch("/api/whatsapp/sessions")
+      const sessions: string[] = data.sessions ?? []
+      if (sessions.length > 0) {
+        const waChannels: Channel[] = sessions.map((sessionId, i) => ({
+          id: sessionId, type: "whatsapp", alias: `Chip ${i + 1}`,
+          address: sessionId.split("-").slice(-1)[0] || "Conectado",
+          status: "connected", sent: 0, limit: 150, sessionId,
+        }))
+        setChannels(prev => {
+          const existing = prev.filter(c => c.type !== "whatsapp")
+          return [...existing, ...waChannels]
+        })
+      }
+    } catch {}
+  }
 
   const filtered = channels.filter(c => c.type === activeTab)
 
@@ -50,7 +72,6 @@ export function ChannelsPage() {
     setQrLoading(true)
     setQrData(null)
     const sessionId = `${user.uid}-${Date.now()}`
-    setQrSession(sessionId)
 
     try {
       await apiFetch("/api/whatsapp/session", {
@@ -58,11 +79,15 @@ export function ChannelsPage() {
         body: JSON.stringify({ sessionId }),
       })
 
-      // Poll QR a cada 2s por até 60s
       let attempts = 0
       pollRef.current = setInterval(async () => {
         attempts++
-        if (attempts > 30) { stopPolling(); setQrLoading(false); toast.error("QR expirou — tente novamente"); return }
+        if (attempts > 40) {
+          stopPolling()
+          setQrLoading(false)
+          toast.error("QR expirou — tente novamente")
+          return
+        }
         try {
           const data = await apiFetch(`/api/whatsapp/qr/${sessionId}`)
           if (data.qr) {
@@ -70,19 +95,22 @@ export function ChannelsPage() {
             setQrLoading(false)
           }
         } catch {
-          // QR ainda não disponível ou sessão conectada
-          const sessions = await apiFetch("/api/whatsapp/sessions").catch(() => ({ sessions: [] }))
-          if (sessions.sessions?.includes(sessionId)) {
-            stopPolling()
-            setShowModal(false)
-            setQrData(null)
-            const addr = sessionId.split("-")[0]
-            setChannels(p => [...p, {
-              id: sessionId, type: "whatsapp", alias: form.alias || "Novo Chip",
-              address: addr, status: "connected", sent: 0, limit: 150, sessionId,
-            }])
-            toast.success("WhatsApp conectado!")
-          }
+          // Verifica se conectou
+          try {
+            const sessions = await apiFetch("/api/whatsapp/sessions")
+            if ((sessions.sessions ?? []).includes(sessionId)) {
+              stopPolling()
+              setShowModal(false)
+              setQrData(null)
+              setChannels(p => [...p, {
+                id: sessionId, type: "whatsapp",
+                alias: form.alias || `Chip ${filtered.length + 1}`,
+                address: "Conectado", status: "connected",
+                sent: 0, limit: 150, sessionId,
+              }])
+              toast.success("WhatsApp conectado!")
+            }
+          } catch {}
         }
       }, 2000)
     } catch (err: any) {
@@ -91,17 +119,14 @@ export function ChannelsPage() {
     }
   }
 
-  function openModal() { setShowModal(true); setQrData(null); setQrLoading(false) }
-
   function closeModal() {
     stopPolling()
     setShowModal(false)
     setQrData(null)
     setQrLoading(false)
-    setQrSession(null)
   }
 
-  function addEmailOrOther() {
+  function addOther() {
     if (!form.address) return
     setChannels(p => [...p, {
       id: `c-${Date.now()}`, type: activeTab, alias: form.alias || form.address,
@@ -130,11 +155,17 @@ export function ChannelsPage() {
           <h1 className="text-lg font-bold text-white">Canais</h1>
           <p className="text-[#7d8590] text-sm">Gerencie seus canais de disparo</p>
         </div>
-        <button onClick={openModal}
-          className="flex items-center gap-2 bg-[#2ea043] hover:bg-[#238636] text-white text-sm font-semibold px-4 py-2 rounded-lg transition-colors">
-          <Plus className="w-4 h-4" />
-          Adicionar {CHANNEL_CONFIG[activeTab].label}
-        </button>
+        <div className="flex items-center gap-2">
+          <button onClick={loadActiveSessions}
+            className="flex items-center gap-2 border border-white/10 hover:border-white/20 text-[#7d8590] hover:text-white text-sm px-3 py-2 rounded-lg transition-colors">
+            <RefreshCw className="w-4 h-4" /> Atualizar
+          </button>
+          <button onClick={() => setShowModal(true)}
+            className="flex items-center gap-2 bg-[#2ea043] hover:bg-[#238636] text-white text-sm font-semibold px-4 py-2 rounded-lg transition-colors">
+            <Plus className="w-4 h-4" />
+            Adicionar {CHANNEL_CONFIG[activeTab].label}
+          </button>
+        </div>
       </div>
 
       {/* Tabs */}
@@ -152,7 +183,6 @@ export function ChannelsPage() {
         })}
       </div>
 
-      {/* Anti-ban tips */}
       {activeTab === "whatsapp" && (
         <div className="bg-[#d29922]/10 border border-[#d29922]/20 rounded-xl p-4 text-xs text-[#7d8590] space-y-1">
           <p className="text-[#d29922] font-semibold mb-1">⚠️ Boas práticas anti-ban</p>
@@ -162,7 +192,6 @@ export function ChannelsPage() {
         </div>
       )}
 
-      {/* Lista */}
       {filtered.length === 0 ? (
         <div className="bg-[#161b22] border border-dashed border-white/10 rounded-xl p-12 text-center">
           <div className="text-4xl mb-3">{CHANNEL_CONFIG[activeTab].emoji}</div>
@@ -187,7 +216,7 @@ export function ChannelsPage() {
                       {s.label}
                     </span>
                   </div>
-                  <div className="text-xs text-[#7d8590] font-mono">{ch.address}</div>
+                  <div className="text-xs text-[#7d8590] font-mono">{ch.sessionId || ch.address}</div>
                   <div className="mt-2 flex items-center gap-2">
                     <div className="flex-1 h-1 bg-[#21262d] rounded-full overflow-hidden">
                       <div className={`h-full rounded-full ${pct < 60 ? "bg-[#2ea043]" : pct < 85 ? "bg-[#d29922]" : "bg-[#f85149]"}`}
@@ -224,25 +253,21 @@ export function ChannelsPage() {
                   <span className="text-xl">📱</span>
                   <h3 className="font-bold text-white">Vincular WhatsApp</h3>
                 </div>
-
                 <input value={form.alias} onChange={e => setForm(p => ({...p, alias: e.target.value}))}
                   placeholder="Apelido (ex: Chip Principal)"
                   className="w-full bg-[#0d1117] border border-white/10 rounded-lg px-3 py-2.5 text-white text-sm outline-none focus:border-[#2ea043]/50" />
-
                 {!qrLoading && !qrData && (
                   <button onClick={startWASession}
                     className="w-full flex items-center justify-center gap-2 bg-[#25d366] hover:bg-[#1da851] text-white font-semibold py-3 rounded-xl transition-colors">
                     <span>📲</span> Gerar QR Code
                   </button>
                 )}
-
                 {qrLoading && !qrData && (
                   <div className="text-center py-6 space-y-3">
                     <Loader2 className="w-8 h-8 animate-spin text-[#25d366] mx-auto" />
                     <p className="text-sm text-[#7d8590]">Gerando QR Code...</p>
                   </div>
                 )}
-
                 {qrData && (
                   <div className="space-y-3">
                     <p className="text-xs text-[#7d8590] text-center">WhatsApp → Aparelhos Conectados → Conectar aparelho</p>
@@ -266,13 +291,12 @@ export function ChannelsPage() {
                 <input value={form.alias} onChange={e => setForm(p => ({...p, alias: e.target.value}))}
                   placeholder="Apelido"
                   className="w-full bg-[#0d1117] border border-white/10 rounded-lg px-3 py-2.5 text-white text-sm outline-none focus:border-[#2ea043]/50" />
-                <button onClick={addEmailOrOther}
+                <button onClick={addOther}
                   className="w-full py-2.5 text-sm font-semibold text-white bg-[#2ea043] hover:bg-[#238636] rounded-lg transition-colors">
                   Adicionar
                 </button>
               </>
             )}
-
             <button onClick={closeModal} className="w-full py-2 text-sm text-[#7d8590] hover:text-white transition-colors">
               Cancelar
             </button>
