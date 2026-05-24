@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from "react"
 import { toast } from "sonner"
-import { Send, Bot, Upload, Image as ImageIcon, Link, Sparkles, X, AlertCircle, Loader2, Eye } from "lucide-react"
+import { Send, Bot, Upload, Image as ImageIcon, Link, Sparkles, X, AlertCircle, Loader2, Eye, RefreshCw } from "lucide-react"
 import { apiFetch } from "../../lib/api"
 
 type ChannelType = "whatsapp" | "email" | "telegram" | "sms"
@@ -34,9 +34,8 @@ export function DispatchPage() {
   const contactCount = contacts.split("\n").filter(Boolean).length
   const hasAccounts  = accounts.length > 0
 
-  // Carrega contas reais ao trocar de canal
-  useEffect(() => {
-    setAccount("")
+  // Carrega contas reais ao trocar de canal ou ao chamar loadAccounts()
+  async function loadAccounts() {
     if (channel === "whatsapp") {
       apiFetch("/api/whatsapp/sessions")
         .then(data => {
@@ -51,6 +50,11 @@ export function DispatchPage() {
     } else {
       setAccounts([])
     }
+  }
+
+  useEffect(() => {
+    setAccount("")
+    loadAccounts()
   }, [channel])
 
   async function generatePreview() {
@@ -77,9 +81,57 @@ export function DispatchPage() {
     if (!contacts.trim())    { toast.error("Adicione os contatos"); return }
     if (!account)            { toast.error("Selecione uma conta"); return }
     setLoading(true)
-    await new Promise(r => setTimeout(r, 2000))
-    setLoading(false)
-    toast.success(`Campanha iniciada! ${contactCount} mensagens na fila.`)
+    try {
+      // Parseia contatos
+      const lines = contacts.split("\n").filter(Boolean)
+      const parsed = lines.map((l, i) => {
+        const parts = l.split(",")
+        const phone = parts[0].trim().replace(/\D/g, "")
+        const name  = parts[1]?.trim() || `Contato ${i+1}`
+        return { phone, name }
+      }).filter(c => c.phone.length >= 10)
+
+      if (parsed.length === 0) { toast.error("Nenhum número válido encontrado"); setLoading(false); return }
+
+      // Gera uma mensagem base via IA (ou usa a descrição diretamente)
+      let baseMessage = description
+      try {
+        const ai = await apiFetch("/api/ai/ask", {
+          method: "POST",
+          body: JSON.stringify({
+            prompt: `Crie UMA mensagem curta para WhatsApp sobre: "${description}". Máximo 3 linhas. Tom casual. Sem "Olá" genérico. Sem mencionar nomes. Responda APENAS com a mensagem.`
+          })
+        })
+        if (ai.answer) baseMessage = ai.answer.trim()
+      } catch {}
+
+      const campaignId = `camp-${Date.now()}`
+      const delayMs    = delay === "ia"
+        ? (Math.floor(Math.random() * 14) + 8) * 1000
+        : (Math.floor(Math.random() * (delayMax - delayMin)) + delayMin) * 1000
+
+      const messages = parsed.map((c, i) => ({
+        jobId:       `${campaignId}-${i}`,
+        to:          c.phone,
+        contactName: c.name,
+        message:     baseMessage.replace(/\[\[nome\]\]/gi, c.name),
+        senderId:    account,
+        delay:       i * delayMs,
+      }))
+
+      await apiFetch("/api/whatsapp/enqueue", {
+        method: "POST",
+        body: JSON.stringify({ campaignId, messages }),
+      })
+
+      toast.success(`✅ ${parsed.length} mensagens na fila! Delay: ${delay === "ia" ? "automático" : `${delayMin}-${delayMax}s`}`)
+      setContacts("")
+      setDescription("")
+    } catch (err: any) {
+      toast.error(err.message ?? "Erro ao disparar")
+    } finally {
+      setLoading(false)
+    }
   }
 
   function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
@@ -125,18 +177,24 @@ export function DispatchPage() {
               ))}
             </div>
 
-            {hasAccounts ? (
-              <select value={account} onChange={e => setAccount(e.target.value)}
-                className="w-full bg-[#0d1117] border border-white/10 rounded-lg px-3 py-2.5 text-white text-sm outline-none focus:border-[#2ea043]/50">
-                <option value="">Selecione a conta...</option>
-                {accounts.map(a => <option key={a.id} value={a.id}>{a.name} — {a.address}</option>)}
-              </select>
-            ) : (
-              <div className="bg-[#0d1117] border border-[#d29922]/30 rounded-lg px-3 py-2.5 text-xs text-[#d29922] flex items-center gap-2">
-                <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
-                Nenhuma conta vinculada. Vá em <strong>Canais</strong> para adicionar.
-              </div>
-            )}
+            <div className="flex gap-2">
+              {hasAccounts ? (
+                <select value={account} onChange={e => setAccount(e.target.value)}
+                  className="flex-1 bg-[#0d1117] border border-white/10 rounded-lg px-3 py-2.5 text-white text-sm outline-none focus:border-[#2ea043]/50">
+                  <option value="">Selecione a conta...</option>
+                  {accounts.map(a => <option key={a.id} value={a.id}>{a.name} — {a.address}</option>)}
+                </select>
+              ) : (
+                <div className="flex-1 bg-[#0d1117] border border-[#d29922]/30 rounded-lg px-3 py-2.5 text-xs text-[#d29922] flex items-center gap-2">
+                  <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
+                  Nenhuma conta vinculada. Vá em <strong>Canais</strong> para adicionar.
+                </div>
+              )}
+              <button onClick={loadAccounts} title="Atualizar contas"
+                className="px-3 py-2.5 border border-white/10 rounded-lg text-[#7d8590] hover:text-white hover:border-white/20 transition-colors">
+                <RefreshCw className="w-4 h-4" />
+              </button>
+            </div>
           </div>
 
           {/* Mensagem */}
