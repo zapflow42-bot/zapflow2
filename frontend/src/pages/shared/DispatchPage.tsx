@@ -1,4 +1,4 @@
-import { useState, useRef } from "react"
+import { useState, useRef, useEffect } from "react"
 import { toast } from "sonner"
 import { Send, Bot, Upload, Image as ImageIcon, Link, Sparkles, X, AlertCircle, Loader2, Eye } from "lucide-react"
 import { apiFetch } from "../../lib/api"
@@ -29,46 +29,44 @@ export function DispatchPage() {
   const [genLoading,  setGenLoading]  = useState(false)
   const [varyLinks,   setVaryLinks]   = useState(true)
 
-  const fileRef  = useRef<HTMLInputElement>(null)
-  const imgRef   = useRef<HTMLInputElement>(null)
+  const fileRef = useRef<HTMLInputElement>(null)
+  const imgRef  = useRef<HTMLInputElement>(null)
   const contactCount = contacts.split("\n").filter(Boolean).length
+  const hasAccounts  = accounts.length > 0
 
-  // Busca contas reais do gateway — usa as que estão no Supabase
-  // Por enquanto mostra aviso se não houver contas
-  const hasAccounts = accounts.length > 0
+  // Carrega contas reais ao trocar de canal
+  useEffect(() => {
+    setAccount("")
+    if (channel === "whatsapp") {
+      apiFetch("/api/whatsapp/sessions")
+        .then(data => {
+          const sessions: string[] = data.sessions ?? []
+          setAccounts(sessions.map((s, i) => ({
+            id: s,
+            name: `Chip ${i + 1}`,
+            address: s.split("-").slice(-1)[0] || s,
+          })))
+        })
+        .catch(() => setAccounts([]))
+    } else {
+      setAccounts([])
+    }
+  }, [channel])
 
   async function generatePreview() {
     if (!description.trim()) { toast.error("Descreva o assunto da mensagem primeiro"); return }
     setGenLoading(true)
     try {
-      // Chama a IA para gerar uma variação única
       const data = await apiFetch("/api/ai/ask", {
         method: "POST",
         body: JSON.stringify({
-          prompt: `Crie UMA mensagem curta e natural para WhatsApp baseada neste assunto:
-
-"${description}"
-
-REGRAS OBRIGATÓRIAS:
-- Máximo 3-4 linhas
-- Tom casual e amigável como conversa de WhatsApp
-- Não use saudação genérica como "Olá"
-- Não mencione nomes (será personalizado depois)
-- Se houver link no assunto, mantenha-o
-- Seja direto e objetivo
-- Use 1-2 emojis no máximo
-
-Responda APENAS com a mensagem, sem explicações.`
+          prompt: `Crie UMA mensagem curta e natural para WhatsApp baseada neste assunto:\n\n"${description}"\n\nREGRAS:\n- Máximo 3-4 linhas\n- Tom casual e amigável\n- Não use "Olá" genérico\n- Não mencione nomes\n- Seja direto\n- Use 1-2 emojis\n\nResponda APENAS com a mensagem.`
         }),
       })
       setPreview(data.answer?.trim() ?? "")
-      // Mostra preview com imagem se houver
       if (images.length > 0) setPreviewImg(images[0])
     } catch {
-      // Sem IA ativa — gera variação local simples
-      const lines = description.split(" ")
-      const shuffled = [...lines].sort(() => Math.random() - 0.5).slice(0, Math.ceil(lines.length * 0.7))
-      setPreview(`${description}\n\n(IA offline — ative o ANTHROPIC_API_KEY para variações inteligentes)`)
+      setPreview(`${description}\n\n(IA offline — ative ANTHROPIC_API_KEY para variações inteligentes)`)
     } finally {
       setGenLoading(false)
     }
@@ -81,16 +79,15 @@ Responda APENAS com a mensagem, sem explicações.`
     setLoading(true)
     await new Promise(r => setTimeout(r, 2000))
     setLoading(false)
-    toast.success(`Campanha iniciada! ${contactCount} mensagens na fila — a IA vai gerar ${contactCount} variações únicas.`)
+    toast.success(`Campanha iniciada! ${contactCount} mensagens na fila.`)
   }
 
   function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
     if (!file) return
     if (file.name.endsWith(".csv") || file.name.endsWith(".xlsx")) {
-      // Simula importação de planilha
       setContacts("5511999990001,João Silva\n5511999990002,Maria Souza\n5511999990003,Carlos Lima")
-      toast.success(`Planilha importada!`)
+      toast.success("Planilha importada!")
     }
     e.target.value = ""
   }
@@ -98,8 +95,7 @@ Responda APENAS com a mensagem, sem explicações.`
   function handleImage(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
     if (!file) return
-    const url = URL.createObjectURL(file)
-    setImages(prev => [...prev, url])
+    setImages(prev => [...prev, URL.createObjectURL(file)])
     toast.success("Imagem adicionada")
     e.target.value = ""
   }
@@ -108,19 +104,17 @@ Responda APENAS com a mensagem, sem explicações.`
     <div className="p-6 space-y-6">
       <div>
         <h1 className="text-lg font-bold text-white">Novo Disparo</h1>
-        <p className="text-[#7d8590] text-sm">A IA gera mensagens únicas para cada contato com base no seu assunto</p>
+        <p className="text-[#7d8590] text-sm">A IA gera mensagens únicas para cada contato</p>
       </div>
 
       <div className="grid grid-cols-2 gap-6">
-        {/* Coluna esquerda */}
         <div className="space-y-4">
-
           {/* Canal */}
           <div className="bg-[#161b22] border border-white/[0.07] rounded-xl p-4 space-y-3">
             <h3 className="text-sm font-semibold text-white">Canal</h3>
             <div className="grid grid-cols-4 gap-2">
               {CHANNELS.map(c => (
-                <button key={c.id} onClick={() => { setChannel(c.id); setAccount("") }}
+                <button key={c.id} onClick={() => setChannel(c.id)}
                   className={`py-2 rounded-lg text-xs font-medium transition-all flex flex-col items-center gap-1
                     ${channel === c.id
                       ? "bg-[#2ea043]/15 border border-[#2ea043]/30 text-[#3fb950]"
@@ -131,7 +125,6 @@ Responda APENAS com a mensagem, sem explicações.`
               ))}
             </div>
 
-            {/* Conta */}
             {hasAccounts ? (
               <select value={account} onChange={e => setAccount(e.target.value)}
                 className="w-full bg-[#0d1117] border border-white/10 rounded-lg px-3 py-2.5 text-white text-sm outline-none focus:border-[#2ea043]/50">
@@ -141,12 +134,12 @@ Responda APENAS com a mensagem, sem explicações.`
             ) : (
               <div className="bg-[#0d1117] border border-[#d29922]/30 rounded-lg px-3 py-2.5 text-xs text-[#d29922] flex items-center gap-2">
                 <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
-                Nenhuma conta vinculada. Vá em <strong>Canais</strong> para adicionar uma conta de {CHANNELS.find(c=>c.id===channel)?.label}.
+                Nenhuma conta vinculada. Vá em <strong>Canais</strong> para adicionar.
               </div>
             )}
           </div>
 
-          {/* Assunto / Descrição */}
+          {/* Mensagem */}
           <div className="bg-[#161b22] border border-white/[0.07] rounded-xl p-4 space-y-3">
             <div className="flex items-center justify-between">
               <h3 className="text-sm font-semibold text-white">Assunto da Mensagem</h3>
@@ -164,15 +157,15 @@ Responda APENAS com a mensagem, sem explicações.`
             )}
 
             <textarea value={description} onChange={e => setDescription(e.target.value)} rows={5}
-              placeholder={"Descreva o que você quer comunicar:\n\nEx: Promoção de 30% em toda a loja até sexta-feira. Link: https://loja.com/promo\nProdutos de qualidade, entrega rápida, aproveite essa oportunidade única."}
+              placeholder={"Descreva o que quer comunicar:\n\nEx: Promoção de 30% até sexta. Link: https://loja.com/promo"}
               className="w-full bg-[#0d1117] border border-white/10 rounded-lg px-3 py-2.5 text-white text-sm outline-none focus:border-[#2ea043]/50 resize-none leading-6" />
 
             <div className="bg-[#0d1117] rounded-lg p-3 text-xs text-[#7d8590] space-y-1">
-              <p className="text-[#bc8cff] font-medium flex items-center gap-1.5"><Bot className="w-3.5 h-3.5" /> Como funciona a IA (Zara)</p>
-              <p>→ Você descreve o assunto em linguagem natural</p>
-              <p>→ Zara gera uma mensagem única para cada contato da lista</p>
-              <p>→ Mesmo assunto, textos diferentes — evita ban e parece natural</p>
-              {varyLinks && <p className="text-[#3fb950]">→ Links recebem parâmetro único por envio ✓</p>}
+              <p className="text-[#bc8cff] font-medium flex items-center gap-1.5"><Bot className="w-3.5 h-3.5" /> Zara</p>
+              <p>→ Descreva o assunto em linguagem natural</p>
+              <p>→ Zara gera uma mensagem única por contato</p>
+              <p>→ Mesmo assunto, textos diferentes — evita ban</p>
+              {varyLinks && <p className="text-[#3fb950]">→ URLs recebem parâmetro único por envio ✓</p>}
             </div>
 
             <label className="flex items-center gap-2 cursor-pointer">
@@ -184,10 +177,9 @@ Responda APENAS com a mensagem, sem explicações.`
               <Link className="w-3 h-3 text-[#7d8590]" />
             </label>
 
-            {/* Anexar imagem */}
             <div className="flex gap-2">
-              <input ref={imgRef}  type="file" accept="image/*"         className="hidden" onChange={handleImage} />
-              <input ref={fileRef} type="file" accept=".csv,.xlsx"      className="hidden" onChange={handleFile} />
+              <input ref={imgRef}  type="file" accept="image/*"    className="hidden" onChange={handleImage} />
+              <input ref={fileRef} type="file" accept=".csv,.xlsx" className="hidden" onChange={handleFile} />
               <button onClick={() => imgRef.current?.click()}
                 className="flex items-center gap-1.5 text-xs text-[#7d8590] border border-white/10 hover:text-white hover:border-white/20 px-3 py-1.5 rounded-lg transition-colors">
                 <ImageIcon className="w-3.5 h-3.5" /> Imagem
@@ -222,9 +214,9 @@ Responda APENAS com a mensagem, sem explicações.`
               ))}
             </div>
             {delay === "ia"
-              ? <p className="text-xs text-[#7d8590]">Zara analisa o histórico e define o delay ideal (geralmente 8–22s) para minimizar risco de ban.</p>
+              ? <p className="text-xs text-[#7d8590]">Zara define o delay ideal (8–22s) para minimizar risco de ban.</p>
               : <div className="flex gap-3">
-                  {[["Mínimo (s)",delayMin,setDelayMin,3,60],["Máximo (s)",delayMax,setDelayMax,delayMin,120]].map(([l,v,fn,min,max]:any) => (
+                  {([["Mínimo (s)",delayMin,setDelayMin,3,60],["Máximo (s)",delayMax,setDelayMax,delayMin,120]] as any[]).map(([l,v,fn,min,max]) => (
                     <div key={l} className="flex-1">
                       <label className="text-xs text-[#7d8590] mb-1 block">{l}</label>
                       <input type="number" value={v} onChange={e => fn(+e.target.value)} min={min} max={max}
@@ -236,9 +228,7 @@ Responda APENAS com a mensagem, sem explicações.`
           </div>
         </div>
 
-        {/* Coluna direita */}
         <div className="space-y-4">
-
           {/* Contatos */}
           <div className="bg-[#161b22] border border-white/[0.07] rounded-xl p-4 space-y-3">
             <div className="flex items-center justify-between">
@@ -246,7 +236,7 @@ Responda APENAS com a mensagem, sem explicações.`
               <span className="text-xs text-[#7d8590]">{contactCount > 0 ? `${contactCount} contatos` : "0 contatos"}</span>
             </div>
             <textarea value={contacts} onChange={e => setContacts(e.target.value)} rows={8}
-              placeholder={"Cole os contatos aqui:\n5511999990001,João Silva\n5511999990002,Maria Souza\n\nOu importe uma planilha CSV/Excel"}
+              placeholder={"Cole os contatos:\n5511999990001,João Silva\n5511999990002,Maria Souza\n\nOu importe planilha CSV/Excel"}
               className="w-full bg-[#0d1117] border border-white/10 rounded-lg px-3 py-2.5 text-white text-sm outline-none focus:border-[#2ea043]/50 resize-none font-mono text-xs leading-6" />
             <div className="flex gap-2">
               <button onClick={() => fileRef.current?.click()}
@@ -262,34 +252,27 @@ Responda APENAS com a mensagem, sem explicações.`
             </div>
           </div>
 
-          {/* Preview da mensagem */}
           {preview && (
             <div className="bg-[#161b22] border border-[#bc8cff]/20 rounded-xl p-4 space-y-3">
               <div className="flex items-center gap-2">
                 <Eye className="w-4 h-4 text-[#bc8cff]" />
                 <h3 className="text-sm font-semibold text-white">Preview — 1 variação</h3>
-                <span className="text-xs text-[#7d8590]">gerada por Zara</span>
+                <span className="text-xs text-[#7d8590]">por Zara</span>
               </div>
-
-              {/* Bolha estilo WhatsApp */}
               <div className="bg-[#0d1117] rounded-xl p-3 space-y-2">
-                {previewImg && (
-                  <img src={previewImg} alt="" className="w-full max-h-40 object-cover rounded-lg" />
-                )}
+                {previewImg && <img src={previewImg} alt="" className="w-full max-h-40 object-cover rounded-lg" />}
                 <p className="text-sm text-[#e6edf3] leading-6 whitespace-pre-wrap">{preview}</p>
                 <p className="text-right text-[10px] text-[#7d8590]">15:08 ✓✓</p>
               </div>
-
               <button onClick={generatePreview} disabled={genLoading}
                 className="text-xs text-[#bc8cff] hover:underline flex items-center gap-1">
                 {genLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
                 Gerar outra variação
               </button>
-              <p className="text-xs text-[#7d8590]">Cada um dos {contactCount || "N"} contatos receberá uma mensagem diferente desta.</p>
+              <p className="text-xs text-[#7d8590]">Cada contato receberá uma mensagem diferente.</p>
             </div>
           )}
 
-          {/* Disparar */}
           <button onClick={launch} disabled={loading}
             className="w-full flex items-center justify-center gap-2 bg-gradient-to-r from-[#2ea043] to-[#238636] hover:from-[#238636] hover:to-[#1a6b2a] disabled:opacity-50 text-white font-semibold py-3.5 rounded-xl transition-all shadow-lg shadow-[#2ea043]/20">
             {loading
