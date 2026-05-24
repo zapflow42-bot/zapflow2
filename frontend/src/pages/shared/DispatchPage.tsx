@@ -37,12 +37,16 @@ export function DispatchPage() {
   // Carrega contas reais ao trocar de canal ou ao chamar loadAccounts()
   async function loadAccounts() {
     if (channel === "whatsapp") {
-      apiFetch("/api/whatsapp/sessions")
-        .then(data => {
+      Promise.all([
+        apiFetch("/api/whatsapp/sessions"),
+        apiFetch("/api/whatsapp/session-names").catch(() => ({ names: {} }))
+      ])
+        .then(([data, namesData]) => {
           const sessions: string[] = data.sessions ?? []
+          const names: Record<string, string> = namesData.names ?? {}
           setAccounts(sessions.map((s, i) => ({
             id: s,
-            name: `Chip ${i + 1}`,
+            name: names[s] || `Chip ${i + 1}`,
             address: s.split("-").slice(-1)[0] || s,
           })))
         })
@@ -102,7 +106,7 @@ export function DispatchPage() {
             prompt: `Crie UMA mensagem curta para WhatsApp sobre: "${description}". Máximo 3 linhas. Tom casual. Sem "Olá" genérico. Sem mencionar nomes. Responda APENAS com a mensagem.`
           })
         })
-        if (ai.answer) baseMessage = ai.answer.trim()
+        if (ai.answer && !ai.answer.includes("IA não configurada") && !ai.answer.includes("Erro na IA") && !ai.answer.includes("ANTHROPIC_API_KEY")) baseMessage = ai.answer.trim()
       } catch {}
 
       const campaignId = `camp-${Date.now()}`
