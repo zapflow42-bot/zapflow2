@@ -2,7 +2,7 @@ import { Routes, Route, NavLink, useNavigate } from "react-router-dom"
 import { useAuthStore } from "../../store/authStore"
 import {
   LayoutDashboard, Users, BarChart3, Bot, LogOut, Zap,
-  Send, Smartphone, Settings, ChevronDown, Activity
+  Send, Smartphone, ChevronDown
 } from "lucide-react"
 import { useState } from "react"
 import { GestorDashboard } from "./GestorDashboard"
@@ -11,10 +11,12 @@ import { GestorReports } from "./GestorReports"
 import { GestorAI } from "./GestorAI"
 import { DispatchPage } from "../shared/DispatchPage"
 import { ChannelsPage } from "../shared/ChannelsPage"
+import { TelegramPage } from "../shared/TelegramPage"
 
 const navItems = [
   { to: "/gestor",             icon: LayoutDashboard, label: "Dashboard",    end: true },
   { to: "/gestor/disparar",    icon: Send,            label: "Disparar"              },
+  { to: "/gestor/telegram",    icon: Send,            label: "Telegram"              },
   { to: "/gestor/canais",      icon: Smartphone,      label: "Canais"                },
   { to: "/gestor/equipe",      icon: Users,           label: "Equipe"                },
   { to: "/gestor/relatorios",  icon: BarChart3,       label: "Relatórios"            },
@@ -106,6 +108,7 @@ export function GestorLayout() {
         <Routes>
           <Route index element={<GestorDashboard />} />
           <Route path="disparar"   element={<DispatchPage />} />
+          <Route path="telegram"   element={<TelegramPage />} />
           <Route path="canais"     element={<ChannelsPage />} />
           <Route path="equipe"     element={<GestorTeam />} />
           <Route path="relatorios" element={<GestorReports />} />
