@@ -1,85 +1,127 @@
-import makeWASocket, { DisconnectReason, type WASocket } from "@whiskeysockets/baileys"
+import makeWASocket, { DisconnectReason, useMultiFileAuthState, fetchLatestBaileysVersion, type WASocket } from "@whiskeysockets/baileys"
 import { redis, supabase, logger } from "@zapflow/shared"
-import { useRedisAuthState, deleteSession } from "./redisAuthState"
+import pino from "pino"
+import path from "path"
+import fs from "fs"
 
 const sessions = new Map<string, WASocket>()
 
 export async function createSession(sessionId: string, ownerId: string): Promise<void> {
-  const { state, saveCreds } = await useRedisAuthState(sessionId)
+  if (sessions.has(sessionId)) return
+  const authDir = path.join("/root/zapflow2/.wa-auth", sessionId)
+  fs.mkdirSync(authDir, { recursive: true })
+  const { state, saveCreds } = await useMultiFileAuthState(authDir)
+  const { version } = await fetchLatestBaileysVersion()
+  logger.info({ version }, "Baileys version")
 
   const sock = makeWASocket({
     auth: state,
+    version,
     printQRInTerminal: false,
-    logger: { level: "silent" } as any,
-    connectTimeoutMs: 30_000,
-    retryRequestDelayMs: 500,
-    browser: ["ZapFlow", "Chrome", "1.0.0"],
+    logger: pino({ level: "silent" }),
+    browser: ["Ubuntu", "Chrome", "120.0.0"],
     syncFullHistory: false,
+    connectTimeoutMs: 60_000,
   })
 
+  sessions.set(sessionId, sock)
   sock.ev.on("creds.update", saveCreds)
+  sock.ev.on("messages.update", updates => {
+    for (const update of updates) {
+      logger.info({ sessionId, update }, "WA message status update")
+    }
+  })
 
-  sock.ev.on("connection.update", async ({ connection, lastDisconnect, qr }) => {
+  sock.ev.on("message-receipt.update", receipts => {
+    for (const receipt of receipts) {
+      logger.info({ sessionId, receipt }, "WA receipt update")
+    }
+  })
+
+
+  sock.ev.on("connection.update", async update => {
+    const { connection, lastDisconnect, qr } = update
+    logger.info({ sessionId, connection, hasQr: !!qr }, "connection.update")
+
     if (qr) {
-      await redis.set(`qr:${sessionId}`, qr, "EX", 60)
-      logger.info({ sessionId }, "QR disponivel")
+      await redis.set(`qr:${sessionId}`, qr, "EX", 180)
+      logger.info({ sessionId }, "QR salvo no Redis")
     }
 
     if (connection === "open") {
-      sessions.set(sessionId, sock)
-      await setStatus(sessionId, ownerId, "connected")
       await redis.del(`qr:${sessionId}`)
+      await setStatus(sessionId, ownerId, "connected")
       logger.info({ sessionId }, "Sessao conectada")
     }
 
     if (connection === "close") {
-      const code     = (lastDisconnect?.error as any)?.output?.statusCode
-      const banned   = code === DisconnectReason.loggedOut
-      const conflict = code === DisconnectReason.connectionReplaced
+      const code = (lastDisconnect?.error as any)?.output?.statusCode
+      logger.warn({ sessionId, code }, "Sessao fechada")
       sessions.delete(sessionId)
+      if (code === DisconnectReason.loggedOut) {
+  await setStatus(sessionId, ownerId, "logged_out")
 
-      if (banned) {
-        await deleteSession(sessionId)
-        await setStatus(sessionId, ownerId, "banned")
-        logger.warn({ sessionId }, "Numero banido")
-        return
-      }
-      if (conflict) {
-        await setStatus(sessionId, ownerId, "disconnected")
+  // Limpa .wa-auth para nao restaurar sessao banida
+  if (fs.existsSync(authDir)) {
+    fs.rmSync(authDir, { recursive: true, force: true })
+    logger.info({ sessionId }, "Credenciais removidas apos loggedOut")
+  }
+
+  return
+}
+      if (code === 515 || code === 408) {
+        logger.info({ sessionId, code }, "Reconectando apos scan...")
+        setTimeout(() => createSession(sessionId, ownerId), 2000)
         return
       }
       await setStatus(sessionId, ownerId, "disconnected")
-      logger.warn({ sessionId }, "Desconectado — reconectando em 5s")
-      setTimeout(() => createSession(sessionId, ownerId), 5_000)
-    }
-  })
-
-  sock.ev.on("messages.upsert", async ({ messages, type }) => {
-    if (type !== "notify") return
-    for (const msg of messages) {
-      if (!msg.key.fromMe && msg.message) {
-        const from = msg.key.remoteJid?.replace("@s.whatsapp.net", "") ?? ""
-        await supabase.from("dispatch_logs")
-          .select("campaign_id").eq("channel", "whatsapp").like("to_masked", `${from.slice(0,4)}%`)
-          .limit(1)
-          .then(async ({ data }) => {
-            if (data?.[0]?.campaign_id) {
-              const { data: camp } = await supabase.from("campaigns").select("reply_count").eq("id", data[0].campaign_id).single()
-              if (camp) await supabase.from("campaigns").update({ reply_count: (camp.reply_count ?? 0) + 1 }).eq("id", data[0].campaign_id)
-            }
-          })
-          .catch(() => {})
-      }
+      setTimeout(() => createSession(sessionId, ownerId), 5000)
     }
   })
 }
 
+export async function getQR(sessionId: string): Promise<string | null> {
+  return await redis.get(`qr:${sessionId}`)
+}
+
 export async function sendMessage(sessionId: string, to: string, text: string): Promise<boolean> {
-  const sock = sessions.get(sessionId)
-  if (!sock) { logger.error({ sessionId }, "Sessao nao encontrada"); return false }
+  // Tenta sessao exata primeiro; se nao encontrar, busca qualquer sessao ativa do mesmo owner
+  let sock = sessions.get(sessionId)
+  let resolvedId = sessionId
+  if (!sock) {
+    const ownerPrefix = sessionId.split("-").slice(0,5).join("-")
+    for (const [sid, s] of sessions.entries()) {
+      if (sid.startsWith(ownerPrefix)) { sock = s; resolvedId = sid; break }
+    }
+  }
+  if (!sock) { logger.warn({ sessionId }, "Sessao nao encontrada"); return false }
+  logger.info({ sessionId, resolvedId }, "sessao resolvida")
   try {
-    const jid = to.includes("@") ? to : `${to}@s.whatsapp.net`
-    await sock.sendMessage(jid, { text })
+    const original = to.replace(/\D/g, "")
+    const candidates: string[] = [original]
+
+    if (original.startsWith("55") && original.length === 12)
+      candidates.unshift(original.slice(0,4) + "9" + original.slice(4))
+
+    if (original.startsWith("55") && original.length === 13 && original[4] === "9")
+      candidates.push(original.slice(0,4) + original.slice(5))
+
+    let jid = ""
+    for (const candidate of candidates) {
+      const testJid = `${candidate}@s.whatsapp.net`
+      const existsList = await sock.onWhatsApp(testJid)
+const exists = existsList?.[0]
+      logger.info({ candidate, testJid, existsJid: exists?.jid, existsFlag: exists?.exists }, "checando WhatsApp")
+      if (exists?.exists) { jid = exists.jid || testJid; break }
+    }
+
+    if (!jid) {
+      logger.warn({ to: original, candidates }, "Nenhum JID valido encontrado")
+      return false
+    }
+
+    const result = await sock.sendMessage(jid, { text })
+    logger.info({ jid, msgId: result?.key?.id }, "whatsapp enviado")
     return true
   } catch (err) {
     logger.error({ sessionId, err: (err as Error).message }, "Falha ao enviar")
@@ -87,12 +129,15 @@ export async function sendMessage(sessionId: string, to: string, text: string): 
   }
 }
 
-export const getQR     = (id: string) => redis.get(`qr:${id}`)
-export const getActive = ()           => Array.from(sessions.keys())
+export function getActive(): string[] {
+  return Array.from(sessions.keys())
+}
 
-async function setStatus(id: string, ownerId: string, status: string) {
-  await supabase.from("wa_sessions").upsert({
-    session_id: id, owner_id: ownerId, status, updated_at: new Date().toISOString(),
+async function setStatus(sessionId: string, ownerId: string, status: string) {
+  const { error } = await supabase.from("sessions").upsert({
+    session_id: sessionId, owner_id: ownerId, status,
+    updated_at: new Date().toISOString(),
     ...(status === "connected" ? { connected_at: new Date().toISOString() } : {}),
-  }).catch(e => logger.error(e, "setStatus falhou"))
+  })
+  if (error) logger.error({ error, sessionId }, "setStatus falhou")
 }
