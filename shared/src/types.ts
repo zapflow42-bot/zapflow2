@@ -41,6 +41,7 @@ export interface Campaign {
 // ── Jobs de fila ──────────────────────────────────
 export interface DispatchJob {
   jobId: string; campaignId: string; ownerId: string
+  tenantId: string; // <--- ADICIONADO: Campo obrigatório para o multi-tenancy
   to: string           // número, email ou chatId dependendo do canal
   contactName: string; message: string; senderId: string
   channelType: ChannelType; subject?: string; attempt: number
