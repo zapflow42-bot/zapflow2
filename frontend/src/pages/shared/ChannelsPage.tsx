@@ -67,7 +67,7 @@ export function ChannelsPage() {
     if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null }
   }
 
-  async function startWASession() {
+ async function startWASession() {
     if (!user) return
     setQrLoading(true)
     setQrData(null)
@@ -82,20 +82,32 @@ export function ChannelsPage() {
       let attempts = 0
       pollRef.current = setInterval(async () => {
         attempts++
+        
         if (attempts > 40) {
           stopPolling()
           setQrLoading(false)
           toast.error("QR expirou — tente novamente")
           return
         }
+
         try {
+          // Faz a requisição usando a estrutura do seu apiFetch
           const data = await apiFetch(`/api/whatsapp/qr/${sessionId}`)
+          
           if (data.qr) {
             setQrData(data.qr)
             setQrLoading(false)
           }
-        } catch {
-          // Verifica se conectou
+        } catch (err: any) {
+          // Trata erros de Autenticação / Permissão originados do Gateway (401, 403)
+          if (err?.status === 401 || err?.status === 403 || err?.message?.includes("Unauthorized")) {
+            stopPolling()
+            setQrLoading(false)
+            toast.error("Erro de autenticação no Gateway. Faça login novamente.")
+            return
+          }
+
+          // Se for 404 ou erro genérico, verifica se a sessão conectou no background
           try {
             const sessions = await apiFetch("/api/whatsapp/sessions")
             if ((sessions.sessions ?? []).includes(sessionId)) {
