@@ -1,12 +1,6 @@
-import { Redis } from "ioredis"
-
-if (!process.env.REDIS_URL) throw new Error("REDIS_URL não definida")
-
-export const redis = new Redis(process.env.REDIS_URL, {
-  maxRetriesPerRequest: null,
-  enableReadyCheck: false,
-  tls: process.env.REDIS_URL.startsWith("rediss://") ? {} : undefined,
-})
-
-redis.on("connect", () => console.log("✓ Redis conectado"))
-redis.on("error",   (e) => console.error("✗ Redis:", e.message))
+import Redis from 'ioredis';
+// Conexão local, super rápida, sem limites de requisição
+export const redis = new Redis({
+  host: '127.0.0.1',
+  port: 6379,
+});
