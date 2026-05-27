@@ -1,10 +1,10 @@
 import { Queue, Worker, type Job } from "bullmq";
-import { redis, supabase, logger, type DispatchJob } from "@zapflow/shared";
+import { newRedisConnection, redis, supabase, logger, type DispatchJob } from "@zapflow/shared";
 import { sendMessage } from "./sessionManager";
 
-// Configuração da fila garantindo a injeção da conexão Redis
+// Configuração da fila usando o Factory Pattern
 export const waQueue = new Queue<DispatchJob>("zf-whatsapp", {
-  connection: redis,
+  connection: newRedisConnection(), 
   defaultJobOptions: {
     attempts: 3,
     backoff: { type: "exponential", delay: 3_000 },
@@ -13,12 +13,17 @@ export const waQueue = new Queue<DispatchJob>("zf-whatsapp", {
   },
 });
 
-export const getQueueStats = async () => ({
-  waiting: await waQueue.getWaitingCount(),
-  active: await waQueue.getActiveCount(),
-  completed: await waQueue.getCompletedCount(),
-  failed: await waQueue.getFailedCount(),
-});
+async function getCampaignActiveHours(campaignId: string): Promise<number[]> {
+  const cacheKey = `camp_hours:${campaignId}`;
+  const cached = await redis.get(cacheKey);
+  if (cached) return JSON.parse(cached);
+
+  const { data } = await supabase.from("campaigns").select("active_hours").eq("id", campaignId).single();
+  const hours = data?.active_hours ?? [8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20];
+  
+  await redis.set(cacheKey, JSON.stringify(hours), "EX", 300);
+  return hours;
+}
 
 export function startWorker() {
   const worker = new Worker<DispatchJob>(
@@ -27,15 +32,8 @@ export function startWorker() {
       const { to, message, senderId, campaignId, contactName, ownerId, tenantId } = job.data;
       const maskedTo = maskPhone(to);
 
-      // Verificação de horário
       const hour = new Date().getHours();
-      const { data: camp } = await supabase
-        .from("campaigns")
-        .select("active_hours")
-        .eq("id", campaignId)
-        .single();
-      
-      const hours: number[] = camp?.active_hours ?? [8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20];
+      const hours = await getCampaignActiveHours(campaignId);
 
       if (!hours.includes(hour)) {
         logger.info({ to: maskedTo, hour }, "Fora do horário, atrasando job");
@@ -43,12 +41,12 @@ export function startWorker() {
         return;
       }
 
-      // Processamento
-      try {
-        const ok = await sendMessage(senderId, to, message);
+      const ok = await sendMessage(senderId, to, message);
+      const field = ok ? "sent_count" : "fail_count";
 
-        // Registro de log
-        await supabase.from("dispatch_logs").insert({
+      // Gravação assíncrona
+      Promise.all([
+        supabase.from("dispatch_logs").insert({
           campaign_id: campaignId,
           owner_id: ownerId,
           tenant_id: tenantId,
@@ -57,34 +55,18 @@ export function startWorker() {
           contact_name: contactName,
           status: ok ? "sent" : "failed",
           attempt: job.attemptsMade + 1,
-        });
+        }),
+        supabase.rpc("whatsapp_increment_count", { p_campaign_id: campaignId, p_field: field })
+      ]).catch(err => {
+        logger.warn({ campaignId, err: err.message }, "Falha silenciosa ao gravar log/contador");
+      });
 
-        // Atualização de contadores (Atomic style)
-        const field = ok ? "sent_count" : "fail_count";
-        const { data: campaignData } = await supabase
-          .from("campaigns")
-          .select(field)
-          .eq("id", campaignId)
-          .single();
-
-        if (campaignData) {
-          const currentCount = (campaignData as any)[field] || 0;
-          await supabase
-            .from("campaigns")
-            .update({ [field]: currentCount + 1 })
-            .eq("id", campaignId);
-        }
-
-        if (!ok) throw new Error(`Falha no envio para ${maskedTo}`);
-        
-        logger.info({ to: maskedTo }, "✓ WhatsApp enviado");
-      } catch (error: any) {
-        logger.error({ error: error.message, to: maskedTo }, "Erro interno no processamento do job");
-        throw error; // Repassa para o BullMQ gerenciar a retentativa (attempts)
-      }
+      if (!ok) throw new Error(`Falha no envio para ${maskedTo}`);
+      
+      logger.info({ to: maskedTo }, "✓ WhatsApp enviado");
     },
     { 
-      connection: redis, // AQUI GARANTIMOS A CONEXÃO
+      connection: newRedisConnection(), // Conexão dedicada para o Worker
       concurrency: 1, 
       limiter: { max: 30, duration: 60_000 } 
     }
@@ -94,7 +76,7 @@ export function startWorker() {
     logger.error({ jobId: job?.id, err: err.message }, "Job WA falhou permanentemente")
   );
 
-  logger.info("WhatsApp Worker iniciado");
+  logger.info("WhatsApp Worker iniciado com Factory Pattern");
   return worker;
 }
 
