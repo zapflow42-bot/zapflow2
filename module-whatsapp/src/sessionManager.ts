@@ -1,4 +1,9 @@
-import makeWASocket, { DisconnectReason, useMultiFileAuthState, fetchLatestBaileysVersion, type WASocket } from "@whiskeysockets/baileys"
+import makeWASocket, {
+  DisconnectReason,
+  useMultiFileAuthState,
+  fetchLatestBaileysVersion,
+  type WASocket,
+} from "@whiskeysockets/baileys"
 import { redis, supabase, logger } from "@zapflow/shared"
 import pino from "pino"
 import path from "path"
@@ -6,13 +11,27 @@ import fs from "fs"
 
 const sessions = new Map<string, WASocket>()
 
-export async function createSession(sessionId: string, ownerId: string): Promise<void> {
-  if (sessions.has(sessionId)) return
-  const authDir = path.join("/root/zapflow2/.wa-auth", sessionId)
+const AUTH_ROOT = process.env.WA_AUTH_DIR
+  ? path.resolve(process.env.WA_AUTH_DIR)
+  : path.resolve(process.cwd(), ".wa-auth")
+
+function ensureAuthDir(sessionId: string): string {
+  const authDir = path.join(AUTH_ROOT, sessionId)
   fs.mkdirSync(authDir, { recursive: true })
+  return authDir
+}
+
+export async function createSession(
+  sessionId: string,
+  ownerId: string
+): Promise<void> {
+  if (sessions.has(sessionId)) return
+
+  const authDir = ensureAuthDir(sessionId)
   const { state, saveCreds } = await useMultiFileAuthState(authDir)
   const { version } = await fetchLatestBaileysVersion()
-  logger.info({ version }, "Baileys version")
+
+  logger.info({ version, authRoot: AUTH_ROOT }, "Baileys version")
 
   const sock = makeWASocket({
     auth: state,
@@ -25,7 +44,9 @@ export async function createSession(sessionId: string, ownerId: string): Promise
   })
 
   sessions.set(sessionId, sock)
+
   sock.ev.on("creds.update", saveCreds)
+
   sock.ev.on("messages.update", updates => {
     for (const update of updates) {
       logger.info({ sessionId, update }, "WA message status update")
@@ -38,9 +59,9 @@ export async function createSession(sessionId: string, ownerId: string): Promise
     }
   })
 
-
   sock.ev.on("connection.update", async update => {
     const { connection, lastDisconnect, qr } = update
+
     logger.info({ sessionId, connection, hasQr: !!qr }, "connection.update")
 
     if (qr) {
@@ -56,26 +77,34 @@ export async function createSession(sessionId: string, ownerId: string): Promise
 
     if (connection === "close") {
       const code = (lastDisconnect?.error as any)?.output?.statusCode
+
       logger.warn({ sessionId, code }, "Sessao fechada")
       sessions.delete(sessionId)
+
       if (code === DisconnectReason.loggedOut) {
-  await setStatus(sessionId, ownerId, "logged_out")
+        await setStatus(sessionId, ownerId, "logged_out")
 
-  // Limpa .wa-auth para nao restaurar sessao banida
-  if (fs.existsSync(authDir)) {
-    fs.rmSync(authDir, { recursive: true, force: true })
-    logger.info({ sessionId }, "Credenciais removidas apos loggedOut")
-  }
+        if (fs.existsSync(authDir)) {
+          fs.rmSync(authDir, { recursive: true, force: true })
+          logger.info({ sessionId }, "Credenciais removidas apos loggedOut")
+        }
 
-  return
-}
-      if (code === 515 || code === 408) {
-        logger.info({ sessionId, code }, "Reconectando apos scan...")
-        setTimeout(() => createSession(sessionId, ownerId), 2000)
         return
       }
+
+      if (code === 515 || code === 408) {
+        logger.info({ sessionId, code }, "Reconectando apos scan...")
+        setTimeout(() => {
+          void createSession(sessionId, ownerId)
+        }, 2000)
+        return
+      }
+
       await setStatus(sessionId, ownerId, "disconnected")
-      setTimeout(() => createSession(sessionId, ownerId), 5000)
+
+      setTimeout(() => {
+        void createSession(sessionId, ownerId)
+      }, 5000)
     }
   })
 }
@@ -84,35 +113,70 @@ export async function getQR(sessionId: string): Promise<string | null> {
   return await redis.get(`qr:${sessionId}`)
 }
 
-export async function sendMessage(sessionId: string, to: string, text: string): Promise<boolean> {
-  // Tenta sessao exata primeiro; se nao encontrar, busca qualquer sessao ativa do mesmo owner
+export async function sendMessage(
+  sessionId: string,
+  to: string,
+  text: string
+): Promise<boolean> {
   let sock = sessions.get(sessionId)
   let resolvedId = sessionId
+
   if (!sock) {
-    const ownerPrefix = sessionId.split("-").slice(0,5).join("-")
+    const ownerPrefix = sessionId.split("-").slice(0, 5).join("-")
+
     for (const [sid, s] of sessions.entries()) {
-      if (sid.startsWith(ownerPrefix)) { sock = s; resolvedId = sid; break }
+      if (sid.startsWith(ownerPrefix)) {
+        sock = s
+        resolvedId = sid
+        break
+      }
     }
   }
-  if (!sock) { logger.warn({ sessionId }, "Sessao nao encontrada"); return false }
+
+  if (!sock) {
+    logger.warn({ sessionId }, "Sessao nao encontrada")
+    return false
+  }
+
   logger.info({ sessionId, resolvedId }, "sessao resolvida")
+
   try {
     const original = to.replace(/\D/g, "")
     const candidates: string[] = [original]
 
-    if (original.startsWith("55") && original.length === 12)
-      candidates.unshift(original.slice(0,4) + "9" + original.slice(4))
+    if (original.startsWith("55") && original.length === 12) {
+      candidates.unshift(original.slice(0, 4) + "9" + original.slice(4))
+    }
 
-    if (original.startsWith("55") && original.length === 13 && original[4] === "9")
-      candidates.push(original.slice(0,4) + original.slice(5))
+    if (
+      original.startsWith("55") &&
+      original.length === 13 &&
+      original[4] === "9"
+    ) {
+      candidates.push(original.slice(0, 4) + original.slice(5))
+    }
 
     let jid = ""
+
     for (const candidate of candidates) {
       const testJid = `${candidate}@s.whatsapp.net`
       const existsList = await sock.onWhatsApp(testJid)
-const exists = existsList?.[0]
-      logger.info({ candidate, testJid, existsJid: exists?.jid, existsFlag: exists?.exists }, "checando WhatsApp")
-      if (exists?.exists) { jid = exists.jid || testJid; break }
+      const exists = existsList?.[0]
+
+      logger.info(
+        {
+          candidate,
+          testJid,
+          existsJid: exists?.jid,
+          existsFlag: exists?.exists,
+        },
+        "checando WhatsApp"
+      )
+
+      if (exists?.exists) {
+        jid = exists.jid || testJid
+        break
+      }
     }
 
     if (!jid) {
@@ -122,6 +186,7 @@ const exists = existsList?.[0]
 
     const result = await sock.sendMessage(jid, { text })
     logger.info({ jid, msgId: result?.key?.id }, "whatsapp enviado")
+
     return true
   } catch (err) {
     logger.error({ sessionId, err: (err as Error).message }, "Falha ao enviar")
@@ -133,11 +198,22 @@ export function getActive(): string[] {
   return Array.from(sessions.keys())
 }
 
-async function setStatus(sessionId: string, ownerId: string, status: string) {
+async function setStatus(
+  sessionId: string,
+  ownerId: string,
+  status: string
+): Promise<void> {
   const { error } = await supabase.from("sessions").upsert({
-    session_id: sessionId, owner_id: ownerId, status,
+    session_id: sessionId,
+    owner_id: ownerId,
+    status,
     updated_at: new Date().toISOString(),
-    ...(status === "connected" ? { connected_at: new Date().toISOString() } : {}),
+    ...(status === "connected"
+      ? { connected_at: new Date().toISOString() }
+      : {}),
   })
-  if (error) logger.error({ error, sessionId }, "setStatus falhou")
+
+  if (error) {
+    logger.error({ error, sessionId }, "setStatus falhou")
+  }
 }

@@ -326,6 +326,12 @@ importers:
 
   shared:
     dependencies:
+      '@types/express':
+        specifier: ^4.17.25
+        version: 4.17.25
+      express:
+        specifier: ^4.22.2
+        version: 4.22.2
       firebase-admin:
         specifier: ^12.0.0
         version: 12.7.0

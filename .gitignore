@@ -6,3 +6,4 @@ sessions/
 *.swo
 .DS_Store
 frontend/.env.local
+.wa-auth

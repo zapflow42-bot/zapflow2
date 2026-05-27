@@ -8,18 +8,39 @@ import { startHealthLoop } from "./health"
 import { userRouter } from "./userRoutes"
 import { reportRouter } from "./reportRoutes"
 
-const app  = express()
+const app = express()
 const PORT = process.env.PORT ?? 4000
 
-app.use(cors({ origin: process.env.CORS_ORIGIN ?? "http://localhost:3000", credentials: true }))
+const allowedOrigins = [
+  "http://localhost:3000",
+  "http://localhost:5173",
+  process.env.CORS_ORIGIN,
+].filter(Boolean) as string[]
+
+app.use(cors({
+  origin(origin, callback) {
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true)
+      return
+    }
+
+    callback(new Error(`CORS bloqueado para origin: ${origin}`))
+  },
+  credentials: true,
+}))
+
 app.use(express.json({ limit: "5mb" }))
+
 app.use((_req, res, next) => {
   res.setHeader("X-Content-Type-Options", "nosniff")
   res.setHeader("X-Frame-Options", "DENY")
   next()
 })
 
-app.get("/health", (_req, res) => res.json({ status: "ok", ts: new Date().toISOString() }))
+app.get("/health", (_req, res) => {
+  res.json({ status: "ok", ts: new Date().toISOString() })
+})
+
 app.get("/health/modules", async (_req, res) => {
   const cached = await redis.get("modules:health")
   res.json(cached ? JSON.parse(cached) : [])
@@ -28,10 +49,23 @@ app.get("/health/modules", async (_req, res) => {
 app.use("/api/users", userRouter)
 
 app.use("/api", requireAuth, rateLimiter)
-app.all("/api/whatsapp/*", (req, res) => proxyToModule("whatsapp", req.path.replace("/api/whatsapp",""), req, res))
-app.all("/api/email/*",    (req, res) => proxyToModule("email",    req.path.replace("/api/email",""),    req, res))
-app.all("/api/telegram/*", (req, res) => proxyToModule("telegram", req.path.replace("/api/telegram",""), req, res))
-app.all("/api/ai/*",       (req, res) => proxyToModule("ai",       req.path.replace("/api/ai",""),       req, res))
+
+app.all("/api/whatsapp/*", (req, res) =>
+  proxyToModule("whatsapp", req.path.replace("/api/whatsapp", ""), req, res)
+)
+
+app.all("/api/email/*", (req, res) =>
+  proxyToModule("email", req.path.replace("/api/email", ""), req, res)
+)
+
+app.all("/api/telegram/*", (req, res) =>
+  proxyToModule("telegram", req.path.replace("/api/telegram", ""), req, res)
+)
+
+app.all("/api/ai/*", (req, res) =>
+  proxyToModule("ai", req.path.replace("/api/ai", ""), req, res)
+)
+
 app.use("/api/reports", reportRouter)
 
 app.listen(PORT, () => {
