@@ -10,15 +10,32 @@ import path from "path"
 import fs from "fs"
 
 const sessions = new Map<string, WASocket>()
+const reconnectTimers = new Map<string, NodeJS.Timeout>()
 
-const AUTH_ROOT = process.env.WA_AUTH_DIR
-  ? path.resolve(process.env.WA_AUTH_DIR)
-  : path.resolve(process.cwd(), ".wa-auth")
+const PROJECT_ROOT = process.cwd()
+
+const AUTH_ROOT = path.resolve(
+  process.env.WA_AUTH_DIR && !process.env.WA_AUTH_DIR.includes("/root/")
+    ? process.env.WA_AUTH_DIR
+    : path.join(PROJECT_ROOT, ".wa-auth")
+)
 
 function ensureAuthDir(sessionId: string): string {
+  fs.mkdirSync(AUTH_ROOT, { recursive: true })
   const authDir = path.join(AUTH_ROOT, sessionId)
   fs.mkdirSync(authDir, { recursive: true })
   return authDir
+}
+
+function scheduleReconnect(sessionId: string, ownerId: string, delayMs: number) {
+  if (reconnectTimers.has(sessionId)) return
+
+  const timer = setTimeout(() => {
+    reconnectTimers.delete(sessionId)
+    void createSession(sessionId, ownerId)
+  }, delayMs)
+
+  reconnectTimers.set(sessionId, timer)
 }
 
 export async function createSession(
@@ -31,16 +48,17 @@ export async function createSession(
   const { state, saveCreds } = await useMultiFileAuthState(authDir)
   const { version } = await fetchLatestBaileysVersion()
 
-  logger.info({ version, authRoot: AUTH_ROOT }, "Baileys version")
+  logger.info({ version, authRoot: AUTH_ROOT, authDir }, "Baileys version")
 
   const sock = makeWASocket({
     auth: state,
     version,
     printQRInTerminal: false,
     logger: pino({ level: "silent" }),
-    browser: ["Ubuntu", "Chrome", "120.0.0"],
+    browser: ["ZapFlow", "Chrome", "120.0.0"],
     syncFullHistory: false,
     connectTimeoutMs: 60_000,
+    defaultQueryTimeoutMs: 60_000,
   })
 
   sessions.set(sessionId, sock)
@@ -73,6 +91,7 @@ export async function createSession(
       await redis.del(`qr:${sessionId}`)
       await setStatus(sessionId, ownerId, "connected")
       logger.info({ sessionId }, "Sessao conectada")
+      return
     }
 
     if (connection === "close") {
@@ -82,6 +101,7 @@ export async function createSession(
       sessions.delete(sessionId)
 
       if (code === DisconnectReason.loggedOut) {
+        await redis.del(`qr:${sessionId}`)
         await setStatus(sessionId, ownerId, "logged_out")
 
         if (fs.existsSync(authDir)) {
@@ -92,19 +112,11 @@ export async function createSession(
         return
       }
 
-      if (code === 515 || code === 408) {
-        logger.info({ sessionId, code }, "Reconectando apos scan...")
-        setTimeout(() => {
-          void createSession(sessionId, ownerId)
-        }, 2000)
-        return
-      }
-
       await setStatus(sessionId, ownerId, "disconnected")
 
-      setTimeout(() => {
-        void createSession(sessionId, ownerId)
-      }, 5000)
+      const delay = code === 515 || code === 408 ? 2_000 : 5_000
+      logger.info({ sessionId, code, delay }, "Agendando reconexao")
+      scheduleReconnect(sessionId, ownerId, delay)
     }
   })
 }
@@ -158,7 +170,7 @@ export async function sendMessage(
 
     let jid = ""
 
-    for (const candidate of candidates) {
+    for (const candidate of [...new Set(candidates)]) {
       const testJid = `${candidate}@s.whatsapp.net`
       const existsList = await sock.onWhatsApp(testJid)
       const exists = existsList?.[0]
