@@ -27,6 +27,14 @@ function ensureAuthDir(sessionId: string): string {
   return authDir
 }
 
+function authDirHasCreds(sessionId: string): boolean {
+  const authDir = path.join(AUTH_ROOT, sessionId)
+  if (!fs.existsSync(authDir)) return false
+
+  const credsFile = path.join(authDir, "creds.json")
+  return fs.existsSync(credsFile)
+}
+
 function scheduleReconnect(sessionId: string, ownerId: string, delayMs: number) {
   if (reconnectTimers.has(sessionId)) return
 
@@ -121,6 +129,44 @@ export async function createSession(
   })
 }
 
+async function restoreSessionFromStorage(
+  sessionId: string
+): Promise<WASocket | null> {
+  if (sessions.has(sessionId)) {
+    return sessions.get(sessionId) || null
+  }
+
+  if (!authDirHasCreds(sessionId)) {
+    logger.warn({ sessionId, authRoot: AUTH_ROOT }, "Sem credenciais locais para restaurar sessao")
+    return null
+  }
+
+  const { data, error } = await supabase
+    .from("sessions")
+    .select("owner_id,status")
+    .eq("session_id", sessionId)
+    .maybeSingle()
+
+  if (error) {
+    logger.error({ sessionId, error }, "Erro ao buscar sessao no Supabase")
+    return null
+  }
+
+  const ownerId = data?.owner_id
+
+  if (!ownerId) {
+    logger.warn({ sessionId }, "Sessao sem owner_id no Supabase")
+    return null
+  }
+
+  logger.info({ sessionId, status: data?.status }, "Restaurando sessao WhatsApp pelo auth local")
+
+  await createSession(sessionId, ownerId)
+  await new Promise(resolve => setTimeout(resolve, 3_000))
+
+  return sessions.get(sessionId) || null
+}
+
 export async function getQR(sessionId: string): Promise<string | null> {
   return await redis.get(`qr:${sessionId}`)
 }
@@ -142,6 +188,16 @@ export async function sendMessage(
         resolvedId = sid
         break
       }
+    }
+  }
+
+  if (!sock) {
+    logger.warn({ sessionId }, "Sessao nao encontrada em memoria, tentando restaurar")
+    sock = await restoreSessionFromStorage(sessionId)
+
+    if (sock) {
+      resolvedId = sessionId
+      logger.info({ sessionId }, "Sessao restaurada para envio")
     }
   }
 
