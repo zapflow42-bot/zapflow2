@@ -1,10 +1,11 @@
+// module-telegram/src/queue.ts — REESCRITO para Supabase (sem Firebase)
 import { Queue, Worker, type Job } from "bullmq"
-import { redis, db, logger } from "@zapflow/shared"
+import { newRedisConnection, supabase, logger } from "@zapflow/shared"
 import { sendTelegramMessage } from "./bot"
 import type { DispatchJob } from "@zapflow/shared"
 
 export const tgQueue = new Queue<DispatchJob>("zf-telegram", {
-  connection: redis,
+  connection: newRedisConnection(),
   defaultJobOptions: {
     attempts: 2,
     backoff: { type: "fixed", delay: 2_000 },
@@ -24,21 +25,26 @@ export function startWorker() {
   const worker = new Worker<DispatchJob>(
     "zf-telegram",
     async (job: Job<DispatchJob>) => {
-      const { to, message, campaignId, contactName, ownerId } = job.data
+      const { to, message, campaignId, contactName, ownerId, tenantId } = job.data
 
-      // to = chat_id do Telegram
       const ok = await sendTelegramMessage(to, message)
 
-      await db.collection("dispatch_logs").add({
-        campaignId, ownerId, channel: "telegram",
-        to: `tg:${to}`, contactName,
-        status: ok ? "sent" : "failed",
-        attempt: job.attemptsMade + 1,
-        timestamp: new Date(),
+      // Grava log no Supabase (mesmo padrão do WhatsApp)
+      await supabase.from("dispatch_logs").insert({
+        campaign_id:   campaignId,
+        owner_id:      ownerId,
+        tenant_id:     tenantId,
+        channel:       "telegram",
+        to_masked:     `tg:${to}`,
+        contact_name:  contactName,
+        status:        ok ? "sent" : "failed",
+        attempt:       job.attemptsMade + 1,
       })
 
-      await db.collection("campaigns").doc(campaignId).update({
-        [(ok ? "sentCount" : "failCount")]: (await import("firebase-admin")).default.firestore.FieldValue.increment(1),
+      // Atualiza contador da campanha via RPC (mesmo padrão do WhatsApp)
+      await supabase.rpc("telegram_increment_count", {
+        p_campaign_id: campaignId,
+        p_field:       ok ? "sent_count" : "fail_count",
       })
 
       if (!ok) throw new Error(`Falha Telegram chatId=${to}`)
@@ -46,9 +52,8 @@ export function startWorker() {
       logger.info({ chatId: to, contactName }, "✓ Telegram enviado")
     },
     {
-      connection: redis,
+      connection: newRedisConnection(),
       concurrency: 3,
-      // Telegram: 30 msgs/s global, 1/s por conversa
       limiter: { max: 30, duration: 1_000 },
     }
   )

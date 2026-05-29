@@ -1,7 +1,9 @@
+// module-telegram/src/bot.ts — REESCRITO para Supabase (sem Firebase)
 import { Bot, type Context } from "grammy"
-import { db, logger } from "@zapflow/shared"
+import { supabase, logger } from "@zapflow/shared"
 
 let bot: Bot | null = null
+let botStarted = false
 
 export function getBot(): Bot {
   if (!bot) {
@@ -10,25 +12,19 @@ export function getBot(): Bot {
 
     bot = new Bot(process.env.TELEGRAM_BOT_TOKEN)
 
-    /**
-     * /start — o usuário precisa mandar isso uma vez para o bot poder lhe enviar msgs
-     * Quando o usuário manda /start, salvamos o chat_id no Firestore
-     * O disparador importa esses contatos pelo chat_id
-     */
     bot.command("start", async (ctx: Context) => {
       const chatId = ctx.chat?.id.toString()
       const name   = ctx.from?.first_name ?? "usuário"
       const user   = ctx.from?.username ? `@${ctx.from.username}` : name
 
       if (chatId) {
-        // Salva o contato no Firestore para ficar disponível para os disparadores
-        await db.collection("telegram_contacts").doc(chatId).set({
-          chatId,
+        await supabase.from("telegram_contacts").upsert({
+          chat_id:    chatId,
           name,
-          username: ctx.from?.username ?? null,
-          joinedAt: new Date(),
-          active:   true,
-        }, { merge: true })
+          username:   ctx.from?.username ?? null,
+          joined_at:  new Date().toISOString(),
+          active:     true,
+        }, { onConflict: "chat_id" })
 
         logger.info({ chatId, name }, "Novo contato Telegram via /start")
       }
@@ -44,30 +40,36 @@ export function getBot(): Bot {
     bot.command("parar", async (ctx: Context) => {
       const chatId = ctx.chat?.id.toString()
       if (chatId) {
-        await db.collection("telegram_contacts").doc(chatId).update({ active: false })
+        await supabase.from("telegram_contacts")
+          .update({ active: false })
+          .eq("chat_id", chatId)
       }
       await ctx.reply("Você foi descadastrado. Para se cadastrar novamente, envie /start.")
     })
 
-    // Captura mensagens de resposta para rastrear engajamento
     bot.on("message:text", async (ctx: Context) => {
       const text   = ctx.message?.text ?? ""
       const chatId = ctx.chat?.id.toString()
       if (!chatId) return
 
-      // Atualiza lastMessage e incrementa replyCount da campanha se houver
-      await db.collection("telegram_contacts").doc(chatId).update({
-        lastMessage: text.slice(0, 200),
-        lastReplyAt: new Date(),
-      }).catch(() => {})
+      await supabase.from("telegram_contacts")
+        .update({
+          last_message:  text.slice(0, 200),
+          last_reply_at: new Date().toISOString(),
+        })
+        .eq("chat_id", chatId)
     })
+  }
 
-    // Produção: usar webhook em vez de long polling
-    // Em dev: long polling é ok
+  if (!botStarted) {
+    botStarted = true
     if (process.env.TELEGRAM_WEBHOOK_URL) {
       bot.start({ onStart: () => logger.info("Telegram bot: webhook ativo") })
     } else {
-      bot.start({ onStart: () => logger.info("Telegram bot: long polling ativo") })
+      bot.start({
+        onStart: () => logger.info("Telegram bot: long polling ativo"),
+        drop_pending_updates: true,
+      })
     }
   }
 
@@ -80,9 +82,10 @@ export async function sendTelegramMessage(chatId: string, text: string): Promise
     await b.api.sendMessage(Number(chatId), text, { parse_mode: "HTML" })
     return true
   } catch (err: any) {
-    // 403 = usuário bloqueou o bot
     if (err?.error_code === 403) {
-      await db.collection("telegram_contacts").doc(chatId).update({ active: false })
+      await supabase.from("telegram_contacts")
+        .update({ active: false })
+        .eq("chat_id", chatId)
     }
     logger.error({ chatId, err: err?.description ?? err?.message }, "✗ Telegram falhou")
     return false
