@@ -131,14 +131,14 @@ export async function createSession(
 
 async function restoreSessionFromStorage(
   sessionId: string
-): Promise<WASocket | null> {
+): Promise<WASocket | undefined> {
   if (sessions.has(sessionId)) {
     return sessions.get(sessionId) || null
   }
 
   if (!authDirHasCreds(sessionId)) {
     logger.warn({ sessionId, authRoot: AUTH_ROOT }, "Sem credenciais locais para restaurar sessao")
-    return null
+    return undefined
   }
 
   const { data, error } = await supabase
@@ -149,14 +149,14 @@ async function restoreSessionFromStorage(
 
   if (error) {
     logger.error({ sessionId, error }, "Erro ao buscar sessao no Supabase")
-    return null
+    return undefined
   }
 
   const ownerId = data?.owner_id
 
   if (!ownerId) {
     logger.warn({ sessionId }, "Sessao sem owner_id no Supabase")
-    return null
+    return undefined
   }
 
   logger.info({ sessionId, status: data?.status }, "Restaurando sessao WhatsApp pelo auth local")

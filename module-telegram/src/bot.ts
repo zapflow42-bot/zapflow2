@@ -18,13 +18,20 @@ export function getBot(): Bot {
       const user   = ctx.from?.username ? `@${ctx.from.username}` : name
 
       if (chatId) {
-        await supabase.from("telegram_contacts").upsert({
-          chat_id:    chatId,
-          name,
-          username:   ctx.from?.username ?? null,
-          joined_at:  new Date().toISOString(),
-          active:     true,
-        }, { onConflict: "chat_id" })
+        // FIX: confirmed_at agora é gravado no upsert do /start
+        // Sem isso, routes.ts filtra .not("confirmed_at","is",null)
+        // e a lista de contatos retorna vazia — nenhum disparo funcionaria
+        await supabase.from("telegram_contacts").upsert(
+          {
+            chat_id:      chatId,
+            name,
+            username:     ctx.from?.username ?? null,
+            joined_at:    new Date().toISOString(),
+            active:       true,
+            confirmed_at: new Date().toISOString(), // ← FIX CRÍTICO
+          },
+          { onConflict: "chat_id" }
+        )
 
         logger.info({ chatId, name }, "Novo contato Telegram via /start")
       }

@@ -4,7 +4,11 @@ packages:
   - "module-*"
   - "frontend"
 allowBuilds:
+  bufferutil: true
+  core-js: true
+  es5-ext: true
   esbuild: true
   msgpackr-extract: true
   protobufjs: true
   sharp: true
+  utf-8-validate: true

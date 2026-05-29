@@ -1,6 +1,10 @@
 import { useState, useEffect, useRef } from "react"
 import { toast } from "sonner"
-import { Plus, Smartphone, Mail, Send, MessageSquare, Trash2, Wifi, WifiOff, Flame, Loader2, RefreshCw } from "lucide-react"
+import {
+  Plus, Smartphone, Mail, Send, MessageSquare,
+  Trash2, Wifi, WifiOff, Flame, Loader2, RefreshCw,
+  Phone, KeyRound, ShieldCheck,
+} from "lucide-react"
 import { apiFetch } from "../../lib/api"
 import { useAuthStore } from "../../store/authStore"
 import QRCode from "react-qr-code"
@@ -14,10 +18,10 @@ interface Channel {
 }
 
 const CHANNEL_CONFIG = {
-  whatsapp: { icon: Smartphone, color: "#25d366", label: "WhatsApp", emoji: "📱" },
-  email:    { icon: Mail,       color: "#58a6ff", label: "Email",    emoji: "📧" },
-  telegram: { icon: Send,       color: "#229ed9", label: "Telegram", emoji: "✈️"  },
-  sms:      { icon: MessageSquare, color: "#d29922", label: "SMS",   emoji: "💬" },
+  whatsapp: { icon: Smartphone,    color: "#25d366", label: "WhatsApp", emoji: "📱" },
+  email:    { icon: Mail,          color: "#58a6ff", label: "Email",    emoji: "📧" },
+  telegram: { icon: Send,          color: "#229ed9", label: "Telegram", emoji: "✈️"  },
+  sms:      { icon: MessageSquare, color: "#d29922", label: "SMS",      emoji: "💬" },
 }
 
 const statusMap = {
@@ -25,100 +29,95 @@ const statusMap = {
   disconnected: { icon: WifiOff, color: "text-[#f85149]", bg: "bg-[#f85149]/20", label: "desconectado" },
   warming:      { icon: Flame,   color: "text-[#d29922]", bg: "bg-[#d29922]/20", label: "aquecendo"    },
   banned:       { icon: WifiOff, color: "text-[#f85149]", bg: "bg-[#f85149]/20", label: "banido"       },
-  pending:      { icon: Loader2, color: "text-[#58a6ff]", bg: "bg-[#58a6ff]/20", label: "aguardando QR" },
+  pending:      { icon: Loader2, color: "text-[#58a6ff]", bg: "bg-[#58a6ff]/20", label: "aguardando"   },
 }
+
+// ── Tipos do fluxo Telegram ─────────────────────────────────────────────────
+type TgStep = "idle" | "phone" | "code" | "2fa" | "connecting" | "done"
 
 export function ChannelsPage() {
   const { user } = useAuthStore()
-  const [activeTab, setActiveTab]   = useState<ChannelType>("whatsapp")
-  const [channels,  setChannels]    = useState<Channel[]>([])
-  const [showModal, setShowModal]   = useState(false)
-  const [qrData,    setQrData]      = useState<string | null>(null)
-  const [qrLoading, setQrLoading]   = useState(false)
-  const [form,      setForm]        = useState({ address: "", alias: "" })
+  const [activeTab,  setActiveTab]  = useState<ChannelType>("whatsapp")
+  const [channels,   setChannels]   = useState<Channel[]>([])
+  const [showModal,  setShowModal]  = useState(false)
+  const [form,       setForm]       = useState({ address: "", alias: "" })
+
+  // WhatsApp QR state
+  const [qrData,    setQrData]    = useState<string | null>(null)
+  const [qrLoading, setQrLoading] = useState(false)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
-  // Carrega sessões ativas ao montar
-  useEffect(() => {
-    loadActiveSessions()
-  }, [])
+  // Telegram MTProto state
+  const [tgStep,       setTgStep]       = useState<TgStep>("idle")
+  const [tgPhone,      setTgPhone]      = useState("")
+  const [tgCode,       setTgCode]       = useState("")
+  const [tgPassword,   setTgPassword]   = useState("")
+  const [tgAlias,      setTgAlias]      = useState("")
+  const [tgSessionId,  setTgSessionId]  = useState("")
+  const [tgLoading,    setTgLoading]    = useState(false)
+  const tgPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
+  useEffect(() => { loadActiveSessions() }, [])
+
+  // ── Carrega sessões ativas ────────────────────────────────────────────────
   async function loadActiveSessions() {
     try {
-      const data = await apiFetch("/api/whatsapp/sessions")
-      const sessions: string[] = data.sessions ?? []
-      if (sessions.length > 0) {
-        const waChannels: Channel[] = sessions.map((sessionId, i) => ({
-          id: sessionId, type: "whatsapp", alias: `Chip ${i + 1}`,
-          address: sessionId.split("-").slice(-1)[0] || "Conectado",
-          status: "connected", sent: 0, limit: 150, sessionId,
-        }))
-        setChannels(prev => {
-          const existing = prev.filter(c => c.type !== "whatsapp")
-          return [...existing, ...waChannels]
-        })
-      }
+      // WhatsApp
+      const waData = await apiFetch("/api/whatsapp/sessions")
+      const waSessions: string[] = waData.sessions ?? []
+      const waChannels: Channel[] = waSessions.map((sessionId, i) => ({
+        id: sessionId, type: "whatsapp", alias: `Chip ${i + 1}`,
+        address: sessionId.split("-").slice(-1)[0] || "Conectado",
+        status: "connected", sent: 0, limit: 150, sessionId,
+      }))
+
+      // Telegram
+      const tgData = await apiFetch("/api/telegram/sessions").catch(() => ({ sessions: [] }))
+      const tgSessions: string[] = tgData.sessions ?? []
+      const tgChannels: Channel[] = tgSessions.map((sessionId, i) => ({
+        id: sessionId, type: "telegram", alias: `Chip TG ${i + 1}`,
+        address: sessionId.split("-").slice(-1)[0] || "Conectado",
+        status: "connected", sent: 0, limit: 9999, sessionId,
+      }))
+
+      setChannels([...waChannels, ...tgChannels])
     } catch {}
   }
 
   const filtered = channels.filter(c => c.type === activeTab)
 
+  // ── WhatsApp — QR ─────────────────────────────────────────────────────────
   function stopPolling() {
     if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null }
   }
 
- async function startWASession() {
+  async function startWASession() {
     if (!user) return
-    setQrLoading(true)
-    setQrData(null)
+    setQrLoading(true); setQrData(null)
     const sessionId = `${user.uid}-${Date.now()}`
-
     try {
       await apiFetch("/api/whatsapp/session", {
-        method: "POST",
-        body: JSON.stringify({ sessionId }),
+        method: "POST", body: JSON.stringify({ sessionId }),
       })
-
       let attempts = 0
       pollRef.current = setInterval(async () => {
         attempts++
-        
-        if (attempts > 40) {
-          stopPolling()
-          setQrLoading(false)
-          toast.error("QR expirou — tente novamente")
-          return
-        }
-
+        if (attempts > 40) { stopPolling(); setQrLoading(false); toast.error("QR expirou"); return }
         try {
-          // Faz a requisição usando a estrutura do seu apiFetch
           const data = await apiFetch(`/api/whatsapp/qr/${sessionId}`)
-          
-          if (data.qr) {
-            setQrData(data.qr)
-            setQrLoading(false)
-          }
+          if (data.qr) { setQrData(data.qr); setQrLoading(false) }
         } catch (err: any) {
-          // Trata erros de Autenticação / Permissão originados do Gateway (401, 403)
-          if (err?.status === 401 || err?.status === 403 || err?.message?.includes("Unauthorized")) {
-            stopPolling()
-            setQrLoading(false)
-            toast.error("Erro de autenticação no Gateway. Faça login novamente.")
-            return
+          if (err?.status === 401 || err?.status === 403) {
+            stopPolling(); setQrLoading(false); toast.error("Erro de autenticação"); return
           }
-
-          // Se for 404 ou erro genérico, verifica se a sessão conectou no background
           try {
-            const sessions = await apiFetch("/api/whatsapp/sessions")
-            if ((sessions.sessions ?? []).includes(sessionId)) {
-              stopPolling()
-              setShowModal(false)
-              setQrData(null)
+            const s = await apiFetch("/api/whatsapp/sessions")
+            if ((s.sessions ?? []).includes(sessionId)) {
+              stopPolling(); setShowModal(false); setQrData(null)
               setChannels(p => [...p, {
                 id: sessionId, type: "whatsapp",
                 alias: form.alias || `Chip ${filtered.length + 1}`,
-                address: "Conectado", status: "connected",
-                sent: 0, limit: 150, sessionId,
+                address: "Conectado", status: "connected", sent: 0, limit: 150, sessionId,
               }])
               toast.success("WhatsApp conectado!")
             }
@@ -126,16 +125,97 @@ export function ChannelsPage() {
         }
       }, 2000)
     } catch (err: any) {
-      setQrLoading(false)
-      toast.error(err.message)
+      setQrLoading(false); toast.error(err.message)
     }
   }
 
+  // ── Telegram MTProto — fluxo de 2 passos ─────────────────────────────────
+  function stopTgPolling() {
+    if (tgPollRef.current) { clearInterval(tgPollRef.current); tgPollRef.current = null }
+  }
+
+  async function tgSendCode() {
+    if (!user || !tgPhone.trim()) { toast.error("Digite o número com DDD"); return }
+    setTgLoading(true)
+    const sessionId = `${user.uid}-${Date.now()}`
+    setTgSessionId(sessionId)
+    try {
+      const phone = tgPhone.replace(/\D/g, "")
+      await apiFetch("/api/telegram/session", {
+        method: "POST",
+        body: JSON.stringify({ sessionId, phoneNumber: phone }),
+      })
+      setTgStep("code")
+      toast.success("Código enviado para o Telegram/SMS!")
+    } catch (err: any) {
+      toast.error(err.message ?? "Erro ao enviar código")
+    } finally {
+      setTgLoading(false)
+    }
+  }
+
+  async function tgConfirmCode() {
+    if (!tgCode.trim()) { toast.error("Digite o código"); return }
+    setTgLoading(true)
+    try {
+      await apiFetch("/api/telegram/session/confirm", {
+        method: "POST",
+        body: JSON.stringify({
+          sessionId: tgSessionId,
+          code:      tgCode,
+          password:  tgPassword || undefined,
+        }),
+      })
+      // Verifica se conectou
+      setTgStep("connecting")
+      let attempts = 0
+      tgPollRef.current = setInterval(async () => {
+        attempts++
+        if (attempts > 15) {
+          stopTgPolling(); setTgLoading(false)
+          toast.error("Timeout ao confirmar — tente novamente"); return
+        }
+        try {
+          const data = await apiFetch(`/api/telegram/qr/${tgSessionId}`)
+          if (data.status === "connected") {
+            stopTgPolling()
+            setShowModal(false)
+            resetTgForm()
+            setChannels(p => [...p, {
+              id:        tgSessionId,
+              type:      "telegram",
+              alias:     tgAlias || `Chip TG ${filtered.length + 1}`,
+              address:   tgPhone.replace(/\D/g, ""),
+              status:    "connected",
+              sent:      0,
+              limit:     9999,
+              sessionId: tgSessionId,
+            }])
+            toast.success("✅ Telegram conectado!")
+          }
+        } catch {}
+      }, 1000)
+    } catch (err: any) {
+      setTgLoading(false)
+      // Se precisa de 2FA
+      if (err.message?.includes("2FA") || err.message?.includes("senha")) {
+        setTgStep("2fa")
+        toast.error("Esta conta tem verificação em dois fatores")
+      } else {
+        toast.error(err.message ?? "Código inválido")
+      }
+    }
+  }
+
+  function resetTgForm() {
+    setTgStep("idle"); setTgPhone(""); setTgCode("")
+    setTgPassword(""); setTgAlias(""); setTgSessionId(""); setTgLoading(false)
+  }
+
   function closeModal() {
-    stopPolling()
-    setShowModal(false)
-    setQrData(null)
-    setQrLoading(false)
+    stopPolling(); stopTgPolling()
+    setShowModal(false); setQrData(null); setQrLoading(false); resetTgForm()
+    setForm({ address: "", alias: "" })
   }
 
   function addOther() {
@@ -144,8 +224,7 @@ export function ChannelsPage() {
       id: `c-${Date.now()}`, type: activeTab, alias: form.alias || form.address,
       address: form.address, status: "connected", sent: 0, limit: 1000,
     }])
-    setForm({ address: "", alias: "" })
-    setShowModal(false)
+    setForm({ address: "", alias: "" }); setShowModal(false)
     toast.success("Canal adicionado!")
   }
 
@@ -154,12 +233,11 @@ export function ChannelsPage() {
     toast.success("Aquecimento iniciado por 7 dias")
   }
 
-  function removeChannel(id: string) {
-    setChannels(p => p.filter(c => c.id !== id))
-  }
+  function removeChannel(id: string) { setChannels(p => p.filter(c => c.id !== id)) }
 
-  useEffect(() => () => stopPolling(), [])
+  useEffect(() => () => { stopPolling(); stopTgPolling() }, [])
 
+  // ── Render ─────────────────────────────────────────────────────────────────
   return (
     <div className="p-6 space-y-6">
       <div className="flex items-center justify-between">
@@ -189,12 +267,15 @@ export function ChannelsPage() {
               className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all
                 ${activeTab === t ? "bg-[#21262d] text-white" : "text-[#7d8590] hover:text-white"}`}>
               {CHANNEL_CONFIG[t].emoji} {CHANNEL_CONFIG[t].label}
-              {count > 0 && <span className="text-[10px] bg-[#30363d] text-[#7d8590] px-1.5 py-0.5 rounded-full">{count}</span>}
+              {count > 0 && (
+                <span className="text-[10px] bg-[#30363d] text-[#7d8590] px-1.5 py-0.5 rounded-full">{count}</span>
+              )}
             </button>
           )
         })}
       </div>
 
+      {/* Aviso WhatsApp */}
       {activeTab === "whatsapp" && (
         <div className="bg-[#d29922]/10 border border-[#d29922]/20 rounded-xl p-4 text-xs text-[#7d8590] space-y-1">
           <p className="text-[#d29922] font-semibold mb-1">⚠️ Boas práticas anti-ban</p>
@@ -204,6 +285,19 @@ export function ChannelsPage() {
         </div>
       )}
 
+      {/* Aviso Telegram */}
+      {activeTab === "telegram" && (
+        <div className="bg-[#229ed9]/10 border border-[#229ed9]/20 rounded-xl p-4 text-xs text-[#7d8590] space-y-1">
+          <p className="text-[#229ed9] font-semibold mb-1">ℹ️ Telegram via conta real (MTProto)</p>
+          <p>✓ Envia por número de telefone igual ao WhatsApp</p>
+          <p>✓ Sem limite de bot — usa sua conta pessoal/chip</p>
+          <p>✓ Você precisará de TELEGRAM_API_ID e TELEGRAM_API_HASH no .env</p>
+          <a href="https://my.telegram.org/apps" target="_blank" rel="noreferrer"
+            className="text-[#229ed9] underline">Obter API ID em my.telegram.org/apps</a>
+        </div>
+      )}
+
+      {/* Lista de canais */}
       {filtered.length === 0 ? (
         <div className="bg-[#161b22] border border-dashed border-white/10 rounded-xl p-12 text-center">
           <div className="text-4xl mb-3">{CHANNEL_CONFIG[activeTab].emoji}</div>
@@ -255,11 +349,13 @@ export function ChannelsPage() {
         </div>
       )}
 
-      {/* Modal */}
+      {/* ── Modal ─────────────────────────────────────────────────────────── */}
       {showModal && (
         <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center">
           <div className="bg-[#161b22] border border-white/10 rounded-2xl p-6 w-96 space-y-4 shadow-2xl">
-            {activeTab === "whatsapp" ? (
+
+            {/* WhatsApp — QR */}
+            {activeTab === "whatsapp" && (
               <>
                 <div className="flex items-center gap-2">
                   <span className="text-xl">📱</span>
@@ -294,21 +390,127 @@ export function ChannelsPage() {
                   </div>
                 )}
               </>
-            ) : (
+            )}
+
+            {/* Telegram — MTProto (2 passos) */}
+            {activeTab === "telegram" && (
+              <>
+                <div className="flex items-center gap-2">
+                  <span className="text-xl">✈️</span>
+                  <h3 className="font-bold text-white">Vincular Telegram</h3>
+                </div>
+
+                {/* Passo 1 — número */}
+                {(tgStep === "idle" || tgStep === "phone") && (
+                  <div className="space-y-3">
+                    <p className="text-xs text-[#7d8590]">
+                      Digite o número do chip Telegram com código do país (sem +).
+                    </p>
+                    <div className="relative">
+                      <Phone className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#7d8590]" />
+                      <input
+                        value={tgPhone}
+                        onChange={e => setTgPhone(e.target.value)}
+                        placeholder="5581994900228"
+                        className="w-full bg-[#0d1117] border border-white/10 rounded-lg pl-9 pr-3 py-2.5 text-white text-sm outline-none focus:border-[#229ed9]/50"
+                      />
+                    </div>
+                    <input
+                      value={tgAlias}
+                      onChange={e => setTgAlias(e.target.value)}
+                      placeholder="Apelido (ex: Chip TG 1)"
+                      className="w-full bg-[#0d1117] border border-white/10 rounded-lg px-3 py-2.5 text-white text-sm outline-none focus:border-[#229ed9]/50"
+                    />
+                    <button onClick={tgSendCode} disabled={tgLoading}
+                      className="w-full flex items-center justify-center gap-2 bg-[#229ed9] hover:bg-[#1a7ab0] disabled:opacity-50 text-white font-semibold py-3 rounded-xl transition-colors">
+                      {tgLoading
+                        ? <><Loader2 className="w-4 h-4 animate-spin" /> Enviando...</>
+                        : <><Send className="w-4 h-4" /> Enviar código</>}
+                    </button>
+                  </div>
+                )}
+
+                {/* Passo 2 — código */}
+                {(tgStep === "code" || tgStep === "connecting") && (
+                  <div className="space-y-3">
+                    <div className="bg-[#229ed9]/10 border border-[#229ed9]/20 rounded-lg p-3 text-xs text-[#7d8590]">
+                      <p className="text-[#229ed9] font-semibold mb-1">Código enviado!</p>
+                      Verifique o app Telegram ou SMS no número <strong className="text-white">{tgPhone}</strong>
+                    </div>
+                    <div className="relative">
+                      <KeyRound className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#7d8590]" />
+                      <input
+                        value={tgCode}
+                        onChange={e => setTgCode(e.target.value)}
+                        placeholder="Código (ex: 12345)"
+                        maxLength={10}
+                        className="w-full bg-[#0d1117] border border-white/10 rounded-lg pl-9 pr-3 py-2.5 text-white text-sm outline-none focus:border-[#229ed9]/50 tracking-widest"
+                      />
+                    </div>
+                    {tgStep === "connecting" ? (
+                      <div className="text-center py-3">
+                        <Loader2 className="w-6 h-6 animate-spin text-[#229ed9] mx-auto mb-2" />
+                        <p className="text-xs text-[#7d8590]">Conectando...</p>
+                      </div>
+                    ) : (
+                      <button onClick={tgConfirmCode} disabled={tgLoading}
+                        className="w-full flex items-center justify-center gap-2 bg-[#229ed9] hover:bg-[#1a7ab0] disabled:opacity-50 text-white font-semibold py-3 rounded-xl transition-colors">
+                        {tgLoading
+                          ? <><Loader2 className="w-4 h-4 animate-spin" /> Verificando...</>
+                          : <><ShieldCheck className="w-4 h-4" /> Confirmar</>}
+                      </button>
+                    )}
+                    <button onClick={() => setTgStep("idle")}
+                      className="w-full text-xs text-[#7d8590] hover:text-white py-1 transition-colors">
+                      ← Voltar e trocar número
+                    </button>
+                  </div>
+                )}
+
+                {/* Passo 2FA */}
+                {tgStep === "2fa" && (
+                  <div className="space-y-3">
+                    <div className="bg-[#d29922]/10 border border-[#d29922]/20 rounded-lg p-3 text-xs text-[#d29922]">
+                      Esta conta tem verificação em dois fatores. Digite a senha do Telegram.
+                    </div>
+                    <div className="relative">
+                      <KeyRound className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#7d8590]" />
+                      <input
+                        type="password"
+                        value={tgPassword}
+                        onChange={e => setTgPassword(e.target.value)}
+                        placeholder="Senha 2FA do Telegram"
+                        className="w-full bg-[#0d1117] border border-white/10 rounded-lg pl-9 pr-3 py-2.5 text-white text-sm outline-none focus:border-[#229ed9]/50"
+                      />
+                    </div>
+                    <button onClick={tgConfirmCode} disabled={tgLoading}
+                      className="w-full flex items-center justify-center gap-2 bg-[#229ed9] hover:bg-[#1a7ab0] disabled:opacity-50 text-white font-semibold py-3 rounded-xl transition-colors">
+                      {tgLoading
+                        ? <><Loader2 className="w-4 h-4 animate-spin" /> Verificando...</>
+                        : <><ShieldCheck className="w-4 h-4" /> Confirmar 2FA</>}
+                    </button>
+                  </div>
+                )}
+              </>
+            )}
+
+            {/* Outros canais */}
+            {activeTab !== "whatsapp" && activeTab !== "telegram" && (
               <>
                 <h3 className="font-bold text-white">Adicionar {CHANNEL_CONFIG[activeTab].label}</h3>
                 <input value={form.address} onChange={e => setForm(p => ({...p, address: e.target.value}))}
-                  placeholder={activeTab === "email" ? "email@dominio.com" : activeTab === "telegram" ? "@username do bot" : "+5511..."}
-                  className="w-full bg-[#0d1117] border border-white/10 rounded-lg px-3 py-2.5 text-white text-sm outline-none focus:border-[#2ea043]/50" />
+                  placeholder={activeTab === "email" ? "email@dominio.com" : "+5511..."}
+                  className="w-full bg-[#0d1117] border border-white/10 rounded-lg px-3 py-2.5 text-white text-sm outline-none" />
                 <input value={form.alias} onChange={e => setForm(p => ({...p, alias: e.target.value}))}
                   placeholder="Apelido"
-                  className="w-full bg-[#0d1117] border border-white/10 rounded-lg px-3 py-2.5 text-white text-sm outline-none focus:border-[#2ea043]/50" />
+                  className="w-full bg-[#0d1117] border border-white/10 rounded-lg px-3 py-2.5 text-white text-sm outline-none" />
                 <button onClick={addOther}
                   className="w-full py-2.5 text-sm font-semibold text-white bg-[#2ea043] hover:bg-[#238636] rounded-lg transition-colors">
                   Adicionar
                 </button>
               </>
             )}
+
             <button onClick={closeModal} className="w-full py-2 text-sm text-[#7d8590] hover:text-white transition-colors">
               Cancelar
             </button>
