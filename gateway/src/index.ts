@@ -9,7 +9,7 @@ import { userRouter } from "./userRoutes"
 import { reportRouter } from "./reportRoutes"
 
 const app = express()
-const PORT = process.env.PORT ?? 4000
+const PORT = process.env.GATEWAY_PORT ?? 4000
 
 const allowedOrigins = [
   "http://localhost:3000",

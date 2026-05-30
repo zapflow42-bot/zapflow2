@@ -15,7 +15,7 @@ module.exports = {
     {
       name:            "gateway",
       script:          "./gateway/src/index.ts",
-      interpreter:     "/root/zapflow2/node_modules/.bin/tsx",
+      interpreter:     "/home/darthvader/zapflow2/node_modules/.bin/tsx",
       env_file:        ".env",
       env:             { PORT: 4000 },
       autorestart:     true,
@@ -27,7 +27,7 @@ module.exports = {
     {
       name:               "module-whatsapp",
       script:             "./module-whatsapp/src/index.ts",
-      interpreter:        "/root/zapflow2/node_modules/.bin/tsx",
+      interpreter:        "/home/darthvader/zapflow2/node_modules/.bin/tsx",
       env_file:           ".env",
       env:                { PORT: 4001 },
       autorestart:        true,
@@ -39,7 +39,7 @@ module.exports = {
     {
       name:            "module-email",
       script:          "./module-email/src/index.ts",
-      interpreter:     "/root/zapflow2/node_modules/.bin/tsx",
+      interpreter:     "/home/darthvader/zapflow2/node_modules/.bin/tsx",
       env_file:        ".env",
       env:             { PORT: 4002 },
       autorestart:     true,
@@ -50,7 +50,7 @@ module.exports = {
     {
       name:            "module-telegram",
       script:          "./module-telegram/src/index.ts",
-      interpreter:     "/root/zapflow2/node_modules/.bin/tsx",
+      interpreter:     "/home/darthvader/zapflow2/node_modules/.bin/tsx",
       env_file:        ".env",
       env:             { PORT: 4003 },
       autorestart:     true,
@@ -61,7 +61,7 @@ module.exports = {
     {
       name:            "module-ai",
       script:          "./module-ai/src/index.ts",
-      interpreter:     "/root/zapflow2/node_modules/.bin/tsx",
+      interpreter:     "/home/darthvader/zapflow2/node_modules/.bin/tsx",
       env_file:        ".env",
       env:             { PORT: 4004 },
       instances:       1,

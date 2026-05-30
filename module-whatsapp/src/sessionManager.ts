@@ -30,7 +30,6 @@ function ensureAuthDir(sessionId: string): string {
 function authDirHasCreds(sessionId: string): boolean {
   const authDir = path.join(AUTH_ROOT, sessionId)
   if (!fs.existsSync(authDir)) return false
-
   const credsFile = path.join(authDir, "creds.json")
   return fs.existsSync(credsFile)
 }
@@ -132,8 +131,9 @@ export async function createSession(
 async function restoreSessionFromStorage(
   sessionId: string
 ): Promise<WASocket | undefined> {
+  // FIX TS2322: ?? undefined em vez de || null — Map.get() retorna T | undefined
   if (sessions.has(sessionId)) {
-    return sessions.get(sessionId) || null
+    return sessions.get(sessionId) ?? undefined
   }
 
   if (!authDirHasCreds(sessionId)) {
@@ -164,7 +164,8 @@ async function restoreSessionFromStorage(
   await createSession(sessionId, ownerId)
   await new Promise(resolve => setTimeout(resolve, 3_000))
 
-  return sessions.get(sessionId) || null
+  // FIX TS2322: ?? undefined em vez de || null
+  return sessions.get(sessionId) ?? undefined
 }
 
 export async function getQR(sessionId: string): Promise<string | null> {

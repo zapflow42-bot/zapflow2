@@ -4,7 +4,7 @@ import { router } from "./routes"
 import { startWorker } from "./queue"
 
 const app  = express()
-const PORT = process.env.PORT ?? 4003
+const PORT = process.env.TELEGRAM_PORT ?? 4003
 
 app.use(express.json({ limit: "5mb" }))
 app.use("/", router)

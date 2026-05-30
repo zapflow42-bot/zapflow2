@@ -84,8 +84,9 @@ router.get("/qr/:sessionId", async (req: AuthReq, res: Response) => {
 })
 
 // ── Lista sessões do usuário ────────────────────────────────────────────────
+// FIX: adicionado tipo explícito (s: string) para evitar erro TS7006
 router.get("/sessions", async (req: AuthReq, res: Response) =>
-  res.json({ sessions: getActive().filter(s => s.startsWith(req.uid!)) })
+  res.json({ sessions: getActive().filter((s: string) => s.startsWith(req.uid!)) })
 )
 
 // ── Enfileirar disparos ─────────────────────────────────────────────────────

@@ -12,6 +12,7 @@
 import { TelegramClient } from "telegram"
 import { StringSession } from "telegram/sessions"
 import { Api } from "telegram"
+import { computeCheck } from "telegram/Password"   // ← FIX: import correto para 2FA
 import { redis, supabase, logger } from "@zapflow/shared"
 import path from "path"
 import fs from "fs"
@@ -129,9 +130,10 @@ export async function confirmCode(
     // Conta com 2FA — envia senha
     if (err?.message?.includes("SESSION_PASSWORD_NEEDED")) {
       if (!password) throw new Error("Esta conta tem 2FA. Envie a senha no campo 'password'.")
-      const { SRPParams } = await client.invoke(new Api.account.GetPassword())
-      // @ts-ignore — computeCheck existe no gramjs mas falta tipagem
-      const check = await (client as any).computePasswordSRP(SRPParams, password)
+
+      // FIX: computeCheck é o helper oficial do GramJS para SRP — sem @ts-ignore
+      const pwdInfo = await client.invoke(new Api.account.GetPassword())
+      const check   = await computeCheck(pwdInfo, password)
       await client.invoke(new Api.auth.CheckPassword({ password: check }))
     } else {
       throw err
