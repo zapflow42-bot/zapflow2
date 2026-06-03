@@ -7,3 +7,10 @@ sessions/
 .DS_Store
 frontend/.env.local
 .wa-auth
+
+__pycache__/
+*.pyc
+*.pyo
+.env
+.venv/
+venv/
