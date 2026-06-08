@@ -1,8 +1,16 @@
 #!/usr/bin/env bash
 # ============================================================
-# setup_telegram.sh
+# setup_telegram.sh  — v2 (corrigido)
 # Roda na raiz do monorepo: ~/zapflow2/
 # Instala dependências do sistema, cria o módulo e sobe no PM2
+#
+# CORREÇÕES vs versão anterior:
+#   1. Arquivo de worker renomeado de queue.py → worker.py
+#      (alinhado com os imports de main.py e routes.py)
+#   2. SUPABASE_SERVICE_KEY → SUPABASE_SERVICE_ROLE_KEY em config.py
+#   3. Interpreter no PM2 usa path ABSOLUTO (não relativo ao cwd)
+#   4. Adicionado PYTHONUNBUFFERED e PYTHONUTF8 no env do PM2
+#   5. Removido cryptg do requirements.txt (incompatível com Python 3.11+)
 # ============================================================
 set -e
 
@@ -23,59 +31,69 @@ cd "$SCRIPT_DIR"
 [[ -f "ecosystem.config.js" ]] || die "Rode este script na raiz do zapflow2 (onde está o ecosystem.config.js)"
 log "Diretório: $(pwd)"
 
-# ── 1. Instalar dependências do sistema ──────────────────────────────────────
-log "Instalando python3-venv, python3-pip e python3-full..."
-sudo apt-get update -qq
-sudo apt-get install -y python3-venv python3-pip python3-full
-
-PYTHON=$(command -v python3) || die "python3 não encontrado após instalação"
-log "Python: $($PYTHON --version)"
+# ── 1. Instalar Python 3.11 (compatível com pydantic-core/Telethon) ──────────
+log "Verificando versão do Python..."
+if python3.11 --version &>/dev/null; then
+    PYTHON=$(command -v python3.11)
+    log "Python 3.11 já instalado: $($PYTHON --version)"
+else
+    warn "Python 3.11 não encontrado — instalando via deadsnakes PPA..."
+    sudo apt-get update -qq
+    sudo apt-get install -y software-properties-common
+    sudo add-apt-repository -y ppa:deadsnakes/ppa
+    sudo apt-get update -qq
+    sudo apt-get install -y python3.11 python3.11-venv python3.11-dev
+    PYTHON=$(command -v python3.11) || die "python3.11 não encontrado após instalação"
+    log "Python 3.11 instalado: $($PYTHON --version)"
+fi
 
 # ── 2. Criar pasta do módulo se não existir ──────────────────────────────────
 MODULE_DIR="$SCRIPT_DIR/module-telegram-python"
 SRC_DIR="$MODULE_DIR/src"
 
 if [[ -d "$MODULE_DIR" ]]; then
-    warn "Pasta $MODULE_DIR já existe — pulando criação de arquivos (não sobrescreve)."
-else
-    log "Criando estrutura de pastas..."
-    mkdir -p "$SRC_DIR"
+    warn "Pasta $MODULE_DIR já existe — sobrescrevendo apenas os arquivos Python."
 fi
+mkdir -p "$SRC_DIR"
 
-# ── 3. Criar requirements.txt ────────────────────────────────────────────────
+# ── 3. requirements.txt (sem cryptg — opcional e incompatível com Python 3.12+) ─
 cat > "$MODULE_DIR/requirements.txt" << 'REQS'
 telethon==1.36.0
-fastapi==0.111.0
-uvicorn[standard]==0.30.1
-redis[asyncio]==5.0.4
-supabase==2.4.6
-python-dotenv==1.0.1
-pydantic==2.7.1
-pydantic-settings==2.3.0
-cryptg==0.4.0
+fastapi==0.115.12
+uvicorn[standard]==0.34.3
+redis[asyncio]==5.2.1
+supabase==2.15.2
+python-dotenv==1.1.0
+pydantic==2.11.5
+pydantic-settings==2.9.1
 REQS
 log "requirements.txt criado."
 
-# ── 4. Criar/atualizar todos os arquivos Python ──────────────────────────────
-log "Escrevendo arquivos do módulo..."
+# ── 4. Escrever todos os arquivos Python ─────────────────────────────────────
+log "Escrevendo arquivos Python do módulo..."
 
 # config.py
 cat > "$SRC_DIR/config.py" << 'PYEOF'
+import os
 from pydantic_settings import BaseSettings
 from pydantic import Field
 
-class Settings(BaseSettings):
-    telegram_api_id: int = Field(..., env="TELEGRAM_API_ID")
-    telegram_api_hash: str = Field(..., env="TELEGRAM_API_HASH")
-    redis_url: str = Field("redis://localhost:6379", env="REDIS_URL")
-    supabase_url: str = Field(..., env="SUPABASE_URL")
-    supabase_service_key: str = Field(..., env="SUPABASE_SERVICE_KEY")
-    internal_secret: str = Field("dev-secret-change-in-prod", env="INTERNAL_SECRET")
-    port: int = Field(4003, env="TELEGRAM_PORT")
-    log_level: str = Field("info", env="LOG_LEVEL")
-    node_env: str = Field("development", env="NODE_ENV")
+# Sobe dois níveis a partir de src/ para encontrar o .env na raiz do monorepo
+ENV_FILE = os.path.join(os.path.dirname(__file__), "../../.env")
 
-    model_config = {"env_file": "../../.env", "extra": "ignore"}
+class Settings(BaseSettings):
+    telegram_api_id:    int = Field(..., env="TELEGRAM_API_ID")
+    telegram_api_hash:  str = Field(..., env="TELEGRAM_API_HASH")
+    redis_url:          str = Field("redis://localhost:6379", env="REDIS_URL")
+    supabase_url:       str = Field(..., env="SUPABASE_URL")
+    # ATENÇÃO: variável é SUPABASE_SERVICE_ROLE_KEY (com _ROLE_)
+    supabase_service_key: str = Field(..., env="SUPABASE_SERVICE_ROLE_KEY")
+    internal_secret:    str = Field("dev-secret-change-in-prod", env="INTERNAL_SECRET")
+    port:               int = Field(4003, env="TELEGRAM_PORT")
+    log_level:          str = Field("info", env="LOG_LEVEL")
+    node_env:           str = Field("development", env="NODE_ENV")
+
+    model_config = {"env_file": ENV_FILE, "extra": "ignore"}
 
 settings = Settings()
 PYEOF
@@ -85,9 +103,9 @@ cat > "$SRC_DIR/redis_client.py" << 'PYEOF'
 import redis.asyncio as aioredis
 from config import settings
 
-_pool: aioredis.Redis | None = None
+_pool = None
 
-def get_redis() -> aioredis.Redis:
+def get_redis():
     global _pool
     if _pool is None:
         _pool = aioredis.from_url(
@@ -101,7 +119,7 @@ def get_redis() -> aioredis.Redis:
         )
     return _pool
 
-async def close_redis() -> None:
+async def close_redis():
     global _pool
     if _pool:
         await _pool.aclose()
@@ -205,8 +223,14 @@ PYEOF
 cat > "$SRC_DIR/session_manager.py" << 'PYEOF'
 """
 session_manager.py
-Gerencia sessões Telegram via Telethon (MTProto User API).
-Sessões persistidas no Redis como StringSession.
+Gerencia sessões Telegram via Telethon (MTProto User API, NÃO bot).
+As sessões são serializadas como StringSession e persistidas no Redis.
+
+Fluxo (idêntico ao WhatsApp):
+  1. POST /session        → start_login()  → envia código SMS/app
+  2. POST /session/confirm → confirm_code() → autentica e persiste sessão
+  3. GET  /qr/:sessionId  → get_session_status()
+  4. Worker chama         → send_message()
 """
 import asyncio
 import logging
@@ -446,11 +470,21 @@ def _mask(n: str) -> str:
     return n[:4] + "****" + n[-2:]
 PYEOF
 
-# queue.py
-cat > "$SRC_DIR/queue.py" << 'PYEOF'
+# worker.py  (ATENÇÃO: nome do arquivo é worker.py, NÃO queue.py)
+# main.py e routes.py importam: from worker import ...
+cat > "$SRC_DIR/worker.py" << 'PYEOF'
 """
-queue.py — Worker que consome a fila BullMQ "zf-telegram" do Redis.
-Compatível com jobs enfileirados pelo Node via bullmq.
+worker.py — Worker que consome a fila BullMQ "zf-telegram" do Redis.
+
+ATENÇÃO: este arquivo DEVE se chamar worker.py — main.py e routes.py
+importam "from worker import ...". Se renomear para queue.py, o módulo
+não inicializa.
+
+O gateway Node.js/BullMQ enfileira jobs com este schema (DispatchJob):
+  jobId, campaignId, ownerId, tenantId, to, contactName,
+  message, senderId (= sessionId do chip), channelType, attempt
+
+Este worker Python lê a fila diretamente do Redis via protocolo BullMQ.
 """
 import asyncio
 import json
@@ -461,7 +495,7 @@ from redis_client import get_redis
 from session_manager import send_message
 from supabase_client import get_supabase
 
-logger = logging.getLogger("telegram.queue")
+logger = logging.getLogger("telegram.worker")
 
 QUEUE_NAME    = "zf-telegram"
 _WAIT_KEY     = f"bull:{QUEUE_NAME}:wait"
@@ -544,7 +578,6 @@ async def _worker_loop() -> None:
     logger.info("✈️  Telegram Worker iniciado (Telethon/Python)")
 
     while _running:
-        # peek sem mover
         if not await r.llen(_WAIT_KEY):
             await asyncio.sleep(POLL_INTERVAL)
             continue
@@ -562,12 +595,11 @@ async def _worker_loop() -> None:
             await r.lrem(_ACTIVE_KEY, 0, raw)
             continue
 
-        job_id = job.get("id", "unknown")
+        job_id        = job.get("id", "unknown")
         attempts_made = int(job.get("attemptsMade", 0))
 
         try:
             await _process_job(job_id, job)
-            # ack completed
             now_ms = int(time.time() * 1000)
             pipe = r.pipeline()
             pipe.lrem(_ACTIVE_KEY, 0, raw)
@@ -635,7 +667,7 @@ from pydantic import BaseModel, field_validator
 
 from internal_auth import InternalUser, require_internal_auth
 from session_manager import start_login, confirm_code, get_session_status, get_active
-from queue import get_queue_stats
+from worker import get_queue_stats
 from redis_client import get_redis
 
 logger = logging.getLogger("telegram.routes")
@@ -778,7 +810,7 @@ from fastapi import FastAPI
 from config import settings
 from redis_client import close_redis
 from session_manager import disconnect_all
-from queue import start_worker, stop_worker
+from worker import start_worker, stop_worker
 from routes import router
 
 logging.basicConfig(
@@ -818,7 +850,7 @@ PYEOF
 log "Todos os arquivos Python escritos."
 
 # ── 5. Criar virtualenv e instalar pacotes ───────────────────────────────────
-log "Criando virtualenv em $MODULE_DIR/venv..."
+log "Criando virtualenv com Python 3.11 em $MODULE_DIR/venv..."
 $PYTHON -m venv "$MODULE_DIR/venv"
 
 log "Instalando pacotes Python (pode levar 1-2 min)..."
@@ -828,61 +860,55 @@ log "Instalando pacotes Python (pode levar 1-2 min)..."
 log "Pacotes instalados:"
 "$MODULE_DIR/venv/bin/pip" list --format=columns | grep -E "telethon|fastapi|uvicorn|redis|supabase|pydantic"
 
-# ── 6. Atualizar ecosystem.config.js ────────────────────────────────────────
-VENV_PYTHON="$MODULE_DIR/venv/bin/python"
+# ── 6. Descobrir path absoluto do interpretador ───────────────────────────────
+VENV_PYTHON="$(realpath "$MODULE_DIR/venv/bin/python")"
+log "Path absoluto do interpretador: $VENV_PYTHON"
 
-log "Atualizando ecosystem.config.js (entrada module-telegram)..."
-
-# Faz backup do original
+# ── 7. Atualizar ecosystem.config.js com path ABSOLUTO ───────────────────────
+log "Atualizando ecosystem.config.js com interpreter absoluto..."
 cp ecosystem.config.js ecosystem.config.js.bak
 
-# Substitui a entrada module-telegram usando node inline
-node - << JSEOF
-const fs   = require("fs")
-const path = require("path")
-const file = path.join(process.cwd(), "ecosystem.config.js")
-let src = fs.readFileSync(file, "utf8")
+node - "$VENV_PYTHON" << 'JSEOF'
+const fs       = require("fs")
+const path     = require("path")
+const venvPy   = process.argv[1]
+const file     = path.join(process.cwd(), "ecosystem.config.js")
+let   src      = fs.readFileSync(file, "utf8")
 
-// Substitui o bloco do module-telegram
-const newBlock = \`    {
-      // ── module-telegram — Python + Telethon ──────────────────────────
-      name:            "module-telegram",
-      script:          "src/main.py",
-      cwd:             "./module-telegram-python",
-      interpreter:     "./module-telegram-python/venv/bin/python",
-      env_file:        ".env",
-      env:             { TELEGRAM_PORT: 4003 },
-      autorestart:     true,
-      max_restarts:    10,
-      restart_delay:   3000,
-      watch:           false,
-      log_date_format: "YYYY-MM-DD HH:mm:ss",
-    }\`
-
-// Regex que pega o bloco inteiro do module-telegram (entre { e o }, seguinte)
+// Substitui qualquer valor de interpreter no bloco module-telegram
 src = src.replace(
-  /\{[^{}]*name\s*:\s*["']module-telegram["'][^{}]*\}/s,
-  newBlock
+  /(name:\s*["']module-telegram["'][^}]*interpreter:\s*)(['"][^'"]*['"])/s,
+  (m, prefix) => prefix + JSON.stringify(venvPy)
 )
 fs.writeFileSync(file, src, "utf8")
-console.log("ecosystem.config.js atualizado.")
+console.log("ecosystem.config.js atualizado com interpreter:", venvPy)
 JSEOF
 
-# ── 7. Reiniciar o módulo no PM2 ─────────────────────────────────────────────
+log "Conferindo:"
+grep "interpreter" ecosystem.config.js | grep -v "tsx" | head -3
+
+# ── 8. Reiniciar o módulo no PM2 ─────────────────────────────────────────────
 log "Reiniciando module-telegram no PM2..."
 pm2 delete module-telegram 2>/dev/null || true
 pm2 start ecosystem.config.js --only module-telegram
 pm2 save
 
-# ── 8. Status final ──────────────────────────────────────────────────────────
+sleep 3
+
+# ── 9. Status final ──────────────────────────────────────────────────────────
 echo ""
-log "✅  Setup completo! Status dos processos:"
+log "✅  Setup completo! Status:"
 pm2 status
 
 echo ""
+log "Logs (aguarde 5s para o processo inicializar):"
+sleep 2
+pm2 logs module-telegram --lines 30 --nostream
+
+echo ""
 echo -e "${BOLD}Próximos passos:${RESET}"
-echo -e "  1. Verifique que ${YELLOW}TELEGRAM_API_ID${RESET} e ${YELLOW}TELEGRAM_API_HASH${RESET} estão no .env"
+echo -e "  1. Confirme que ${YELLOW}TELEGRAM_API_ID${RESET} e ${YELLOW}TELEGRAM_API_HASH${RESET} estão no .env"
 echo -e "     Obtenha em: https://my.telegram.org/apps"
-echo -e "  2. Acompanhe os logs:"
-echo -e "     ${YELLOW}pm2 logs module-telegram --lines 50${RESET}"
-echo -e "  3. Se o módulo travar, verifique: ${YELLOW}pm2 monit${RESET}"
+echo -e "  2. Confirme que ${YELLOW}SUPABASE_SERVICE_ROLE_KEY${RESET} (com _ROLE_) está no .env"
+echo -e "  3. Execute a migration: ${YELLOW}supabase_migration_telegram_mtproto.sql${RESET}"
+echo -e "  4. Acompanhe logs: ${YELLOW}pm2 logs module-telegram --lines 50${RESET}"

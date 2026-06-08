@@ -36,17 +36,16 @@ module.exports = {
       watch:           false,
     },
     {
-      // ── module-telegram — Python + Telethon (conta real, NÃO bot) ──────
-      // O module-telegram TypeScript (bot) foi REMOVIDO propositalmente
-      // para evitar conflito de porta 4003 e fila Redis "zf-telegram"
-      name:            "module-telegram",
-      script:          "src/main.py",
-      cwd:             "./module-telegram-python",
-      // IMPORTANTE: use o python do virtualenv (criado pelo setup_telegram.sh)
-      interpreter:     "./module-telegram-python/venv/bin/python",
-      // Fallback sem venv: interpreter: "python3",
-      env_file:        ".env",
-      env:             { TELEGRAM_PORT: 4003, PYTHONUNBUFFERED: '1' },
+      name:        "module-telegram",
+      script:      "src/main.py",
+      cwd:         "./module-telegram-python",
+      interpreter: "/home/darthvader/zapflow2/module-telegram-python/venv/bin/python3.11",
+      env_file:    ".env",
+      env: {
+        TELEGRAM_PORT:    4003,
+        PYTHONUNBUFFERED: "1",
+        PYTHONUTF8:       "1",
+      },
       autorestart:     true,
       max_restarts:    10,
       restart_delay:   3000,
