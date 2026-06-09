@@ -1,6 +1,0 @@
-{
-  "deploy": {
-    "startCommand": "tsx src/index.ts",
-    "restartPolicyType": "ON_FAILURE"
-  }
-}
