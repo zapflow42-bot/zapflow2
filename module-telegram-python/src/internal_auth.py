@@ -36,7 +36,7 @@ class InternalUser(BaseModel):
 
 def _sign(body: Any, timestamp: int) -> str:
     """Mesma lógica do signRequest() do Node."""
-    body_str = "" if body == "" else json.dumps(body, separators=(",", ":"), ensure_ascii=False)
+    body_str = json.dumps(body, separators=(",", ":"), ensure_ascii=False)
     payload = f"{timestamp}.{body_str}"
     return hmac.new(
         settings.internal_secret.encode(),
