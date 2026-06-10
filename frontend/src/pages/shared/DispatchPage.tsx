@@ -35,6 +35,7 @@ export function DispatchPage() {
 
   const fileRef = useRef<HTMLInputElement>(null)
   const imgRef  = useRef<HTMLInputElement>(null)
+  const imageDataRef = useRef<{ base64: string; mime: string } | null>(null)
 
   const contactCount = contacts.split("\n").filter(Boolean).length
   const hasAccounts  = accounts.length > 0
@@ -112,8 +113,8 @@ export function DispatchPage() {
       const safeMax    = Math.max(safeMin + 1, delayMax)
       const delayMs    = (Math.floor(Math.random() * (safeMax - safeMin)) + safeMin) * 1000
 
-      // Pega a primeira imagem se houver
-      const img = images[0] ?? null
+      // Pega a imagem da ref (síncrono, sempre atualizado)
+      const img = imageDataRef.current
 
       const messages = parsed.map((contact, i) => ({
         jobId:       `${campaignId}-${i}`,
@@ -144,6 +145,7 @@ export function DispatchPage() {
       setContacts("")
       setDescription("")
       setImages([])
+      imageDataRef.current = null
     } catch (err: any) {
       toast.error(err.message ?? "Erro ao disparar")
     } finally {
@@ -206,6 +208,8 @@ export function DispatchPage() {
       // result = "data:image/jpeg;base64,AAA..."
       const [header, base64] = result.split(",")
       const mime = header.replace("data:", "").replace(";base64", "")
+      // Salva na ref (síncrono) E no state (para UI)
+      imageDataRef.current = { base64, mime }
       setImages([{ objectUrl: URL.createObjectURL(file), base64, mime, name: file.name }])
       toast.success("Imagem adicionada")
     }
@@ -299,7 +303,7 @@ export function DispatchPage() {
                 {images.map((img, i) => (
                   <div key={i} className="relative">
                     <img src={img.objectUrl} alt="" className="w-16 h-16 rounded-lg object-cover border border-white/10" />
-                    <button onClick={() => setImages(p => p.filter((_, j) => j !== i))}
+                    <button onClick={() => { setImages(p => p.filter((_, j) => j !== i)); imageDataRef.current = null }}
                       className="absolute -top-1 -right-1 w-4 h-4 bg-[#f85149] rounded-full flex items-center justify-center">
                       <X className="w-2.5 h-2.5 text-white" />
                     </button>
