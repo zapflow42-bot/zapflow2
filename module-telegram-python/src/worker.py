@@ -59,10 +59,12 @@ async def _process_job(job_id: str, job_data: dict) -> None:
     sender  = data["senderId"]
     cid     = data.get("campaignId", "")
     attempt = int(data.get("attempt", 0)) + 1
+    image_base64 = data.get("imageBase64")
+    image_mime   = data.get("imageMime")
     masked  = _mask(to)
-    logger.info("Processando envio Telegram jobId=%s campaignId=%s to=%s attempt=%d",
-                job_id, cid, masked, attempt)
-    ok = await send_message(sender, to, msg)
+    logger.info("Processando envio Telegram jobId=%s campaignId=%s to=%s attempt=%d hasImage=%s",
+                job_id, cid, masked, attempt, bool(image_base64))
+    ok = await send_message(sender, to, msg, image_base64, image_mime)
     await _log_to_supabase(data, ok, attempt)
     if ok:
         logger.info("Telegram enviado jobId=%s campaignId=%s to=%s", job_id, cid, masked)

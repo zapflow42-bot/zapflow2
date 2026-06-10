@@ -45,6 +45,8 @@ export interface DispatchJob {
   to: string           // número, email ou chatId dependendo do canal
   contactName: string; message: string; senderId: string
   channelType: ChannelType; subject?: string; attempt: number
+  imageBase64?: string   // base64 da imagem opcional (jpeg/png/gif/webp)
+  imageMime?: string     // ex: "image/jpeg"
 }
 
 // ── Saúde dos módulos ─────────────────────────────

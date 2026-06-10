@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from "react"
 import { toast } from "sonner"
 import { Send, Upload, Image as ImageIcon, Link, X, AlertCircle, RefreshCw } from "lucide-react"
 import { apiFetch } from "../../lib/api"
+import * as XLSX from "xlsx"
 
 type ChannelType = "whatsapp" | "email" | "telegram" | "sms"
 
@@ -12,6 +13,13 @@ const CHANNELS: { id: ChannelType; emoji: string; label: string }[] = [
   { id: "sms",      emoji: "💬", label: "SMS"      },
 ]
 
+interface ImageAttachment {
+  objectUrl: string
+  base64: string
+  mime: string
+  name: string
+}
+
 export function DispatchPage() {
   const [channel,     setChannel]     = useState<ChannelType>("whatsapp")
   const [accounts,    setAccounts]    = useState<{ id: string; name: string; address: string }[]>([])
@@ -21,7 +29,7 @@ export function DispatchPage() {
   const [contacts,    setContacts]    = useState("")
   const [delayMin,    setDelayMin]    = useState(8)
   const [delayMax,    setDelayMax]    = useState(22)
-  const [images,      setImages]      = useState<string[]>([])
+  const [images,      setImages]      = useState<ImageAttachment[]>([])
   const [loading,     setLoading]     = useState(false)
   const [varyLinks,   setVaryLinks]   = useState(true)
 
@@ -45,7 +53,6 @@ export function DispatchPage() {
         })
         .catch(() => setAccounts([]))
     } else if (channel === "telegram") {
-      // Carrega chips Telegram conectados — mesmo padrão do WhatsApp
       apiFetch("/api/telegram/sessions")
         .then(data => {
           const sessions: string[] = data.sessions ?? []
@@ -65,7 +72,7 @@ export function DispatchPage() {
 
   // ── Disparar ────────────────────────────────────────────────────────────
   async function launch() {
-    if (!description.trim()) { toast.error("Digite a mensagem");   return }
+    if (!description.trim() && images.length === 0) { toast.error("Digite a mensagem ou adicione uma imagem"); return }
     if (!contacts.trim())    { toast.error("Adicione os contatos"); return }
     if (!account)            { toast.error("Selecione um chip");    return }
 
@@ -83,7 +90,6 @@ export function DispatchPage() {
 
       if (parsed.length === 0) { toast.error("Nenhum número válido encontrado"); return }
 
-      // Resolve o senderId mais atualizado (igual ao WhatsApp)
       let freshSenderId = account
       if (channel === "whatsapp") {
         try {
@@ -106,6 +112,9 @@ export function DispatchPage() {
       const safeMax    = Math.max(safeMin + 1, delayMax)
       const delayMs    = (Math.floor(Math.random() * (safeMax - safeMin)) + safeMin) * 1000
 
+      // Pega a primeira imagem se houver
+      const img = images[0] ?? null
+
       const messages = parsed.map((contact, i) => ({
         jobId:       `${campaignId}-${i}`,
         to:          contact.phone,
@@ -113,6 +122,7 @@ export function DispatchPage() {
         message:     description.replace(/\[\[nome\]\]/gi, contact.name),
         senderId:    freshSenderId,
         delay:       i * delayMs,
+        ...(img ? { imageBase64: img.base64, imageMime: img.mime } : {}),
       }))
 
       if (channel === "whatsapp") {
@@ -121,7 +131,6 @@ export function DispatchPage() {
           body: JSON.stringify({ campaignId, messages }),
         })
       } else if (channel === "telegram") {
-        // ✅ Telegram MTProto — mesmo endpoint /enqueue, mesmo payload
         await apiFetch("/api/telegram/enqueue", {
           method: "POST",
           body: JSON.stringify({ campaignId, messages }),
@@ -134,6 +143,7 @@ export function DispatchPage() {
       toast.success(`✅ ${parsed.length} mensagens ${channel === "telegram" ? "Telegram" : "WhatsApp"} adicionadas à fila`)
       setContacts("")
       setDescription("")
+      setImages([])
     } catch (err: any) {
       toast.error(err.message ?? "Erro ao disparar")
     } finally {
@@ -141,22 +151,65 @@ export function DispatchPage() {
     }
   }
 
-  function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
+  // ── Importar planilha CSV/XLSX ───────────────────────────────────────────
+  async function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
     if (!file) return
-    if (file.name.endsWith(".csv") || file.name.endsWith(".xlsx")) {
-      setContacts("5511999990001,João Silva\n5511999990002,Maria Souza\n5511999990003,Carlos Lima")
-      toast.success("Planilha importada!")
-    }
     e.target.value = ""
+
+    try {
+      if (file.name.endsWith(".csv") || file.name.endsWith(".txt")) {
+        const text  = await file.text()
+        const lines = text
+          .split(/\r?\n/)
+          .map(l => l.trim())
+          .filter(Boolean)
+          // Remove cabeçalho se a primeira linha não começa com número
+          .filter((l, i) => i > 0 ? true : /^\d/.test(l))
+        setContacts(lines.join("\n"))
+        toast.success(`✅ ${lines.length} contatos importados`)
+      } else if (file.name.endsWith(".xlsx") || file.name.endsWith(".xls")) {
+        const buf  = await file.arrayBuffer()
+        const wb   = XLSX.read(buf)
+        const ws   = wb.Sheets[wb.SheetNames[0]]
+        const rows = XLSX.utils.sheet_to_json<any[]>(ws, { header: 1 }) as any[][]
+        // Detecta se primeira linha é cabeçalho (não começa com número)
+        const start = rows.length > 1 && !/^\d/.test(String(rows[0]?.[0] ?? "")) ? 1 : 0
+        const lines = rows
+          .slice(start)
+          .filter(r => r.length > 0 && r[0])
+          .map(r => r.map((c: any) => String(c ?? "").trim()).join(","))
+        setContacts(lines.join("\n"))
+        toast.success(`✅ ${lines.length} contatos importados`)
+      } else {
+        toast.error("Formato não suportado — use CSV ou XLSX")
+      }
+    } catch {
+      toast.error("Erro ao ler o arquivo")
+    }
   }
 
-  function handleImage(e: React.ChangeEvent<HTMLInputElement>) {
+  // ── Adicionar imagem (converte para base64) ──────────────────────────────
+  async function handleImage(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
     if (!file) return
-    setImages(prev => [...prev, URL.createObjectURL(file)])
-    toast.success("Imagem adicionada")
     e.target.value = ""
+
+    if (images.length >= 1) {
+      toast.error("Apenas uma imagem por disparo")
+      return
+    }
+
+    const reader = new FileReader()
+    reader.onload = () => {
+      const result = reader.result as string
+      // result = "data:image/jpeg;base64,AAA..."
+      const [header, base64] = result.split(",")
+      const mime = header.replace("data:", "").replace(";base64", "")
+      setImages([{ objectUrl: URL.createObjectURL(file), base64, mime, name: file.name }])
+      toast.success("Imagem adicionada")
+    }
+    reader.readAsDataURL(file)
   }
 
   const noAccountMsg = channel === "telegram"
@@ -222,7 +275,7 @@ export function DispatchPage() {
             )}
             <textarea value={description} onChange={e => setDescription(e.target.value)}
               rows={6}
-              placeholder={`Digite a mensagem:\n\nEx: Promoção de 30% até sexta. Link: https://loja.com/promo\n\nUse [[nome]] para personalizar.`}
+              placeholder={`Digite a mensagem:\n\nEx: Promoção de 30% até sexta. Link: https://loja.com/promo\n\nUse [[nome]] para personalizar.\n(Pode deixar em branco se enviar só imagem)`}
               className="w-full bg-[#0d1117] border border-white/10 rounded-lg px-3 py-2.5 text-white text-sm outline-none focus:border-[#2ea043]/50 resize-none leading-6" />
             <label className="flex items-center gap-2 cursor-pointer">
               <div onClick={() => setVaryLinks(s => !s)}
@@ -233,10 +286,11 @@ export function DispatchPage() {
               <Link className="w-3 h-3 text-[#7d8590]" />
             </label>
             <div className="flex gap-2">
-              <input ref={imgRef} type="file" accept="image/*" className="hidden" onChange={handleImage} />
-              <input ref={fileRef} type="file" accept=".csv,.xlsx" className="hidden" onChange={handleFile} />
+              <input ref={imgRef} type="file" accept="image/jpeg,image/png,image/gif,image/webp" className="hidden" onChange={handleImage} />
+              <input ref={fileRef} type="file" accept=".csv,.xlsx,.xls,.txt" className="hidden" onChange={handleFile} />
               <button onClick={() => imgRef.current?.click()}
-                className="flex items-center gap-1.5 text-xs text-[#7d8590] border border-white/10 hover:text-white hover:border-white/20 px-3 py-1.5 rounded-lg transition-colors">
+                disabled={images.length >= 1}
+                className="flex items-center gap-1.5 text-xs text-[#7d8590] border border-white/10 hover:text-white hover:border-white/20 px-3 py-1.5 rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
                 <ImageIcon className="w-3.5 h-3.5" /> Imagem
               </button>
             </div>
@@ -244,11 +298,12 @@ export function DispatchPage() {
               <div className="flex gap-2 flex-wrap">
                 {images.map((img, i) => (
                   <div key={i} className="relative">
-                    <img src={img} alt="" className="w-16 h-16 rounded-lg object-cover border border-white/10" />
+                    <img src={img.objectUrl} alt="" className="w-16 h-16 rounded-lg object-cover border border-white/10" />
                     <button onClick={() => setImages(p => p.filter((_, j) => j !== i))}
                       className="absolute -top-1 -right-1 w-4 h-4 bg-[#f85149] rounded-full flex items-center justify-center">
                       <X className="w-2.5 h-2.5 text-white" />
                     </button>
+                    <div className="text-[9px] text-[#7d8590] text-center mt-0.5 max-w-[64px] truncate">{img.name}</div>
                   </div>
                 ))}
               </div>
@@ -325,7 +380,7 @@ export function DispatchPage() {
                 <p>• Envia por número de telefone igual ao WhatsApp</p>
                 <p>• Usa sua conta real — não é bot</p>
                 <p>• Sem limite diário artificial</p>
-                <p>• Contato não precisa ter iniciado conversa</p>
+                <p>• Suporte a imagem + legenda</p>
               </>
             ) : (
               <>
@@ -334,7 +389,7 @@ export function DispatchPage() {
                 </div>
                 <p>• Envio com fila controlada</p>
                 <p>• Delay configurável entre mensagens</p>
-                <p>• Sem bloqueio por horário</p>
+                <p>• Suporte a imagem + legenda</p>
                 <p>• WhatsApp processa com concorrência segura no servidor</p>
               </>
             )}

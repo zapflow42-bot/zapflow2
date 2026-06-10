@@ -32,9 +32,11 @@ const EnqueueSchema = z.object({
     jobId:       z.string(),
     to:          z.string().min(10),
     contactName: z.string().max(100),
-    message:     z.string().min(1).max(4096),
+    message:     z.string().max(4096).optional().default(""),
     senderId:    z.string(),
     delay:       z.number().min(0).max(300_000),
+    imageBase64: z.string().optional(),
+    imageMime:   z.string().optional(),
   })).min(1).max(10_000),
 })
 
@@ -48,6 +50,7 @@ router.post("/enqueue", async (req: AuthReq, res: Response) => {
       to: msg.to, contactName: msg.contactName,
       message: msg.message, senderId: msg.senderId,
       channelType: "whatsapp", attempt: 0,
+      ...(msg.imageBase64 ? { imageBase64: msg.imageBase64, imageMime: msg.imageMime ?? "image/jpeg" } : {}),
     }, { jobId: msg.jobId, delay: msg.delay })
   }
   res.json({ enqueued: p.data.messages.length })

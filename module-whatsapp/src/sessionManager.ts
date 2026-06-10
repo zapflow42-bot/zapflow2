@@ -175,7 +175,9 @@ export async function getQR(sessionId: string): Promise<string | null> {
 export async function sendMessage(
   sessionId: string,
   to: string,
-  text: string
+  text: string,
+  imageBase64?: string,
+  imageMime?: string
 ): Promise<boolean> {
   let sock = sessions.get(sessionId)
   let resolvedId = sessionId
@@ -253,7 +255,13 @@ export async function sendMessage(
       return false
     }
 
-    const result = await sock.sendMessage(jid, { text })
+    const result = imageBase64
+      ? await sock.sendMessage(jid, {
+          image: Buffer.from(imageBase64, "base64"),
+          mimetype: imageMime ?? "image/jpeg",
+          caption: text || undefined,
+        })
+      : await sock.sendMessage(jid, { text })
     logger.info({ jid, msgId: result?.key?.id }, "whatsapp enviado")
 
     return true

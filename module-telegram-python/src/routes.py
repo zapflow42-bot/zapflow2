@@ -129,6 +129,8 @@ class MessageItem(BaseModel):
     message:     str
     senderId:    str    # sessionId do chip Telegram
     delay:       int    # ms
+    imageBase64: str | None = None
+    imageMime:   str | None = None
 
     @field_validator("to")
     @classmethod
@@ -165,6 +167,22 @@ async def enqueue(
 
     pipe = r.pipeline()
     for msg in body.messages:
+        job_data: dict = {
+            "jobId":       msg.jobId,
+            "campaignId":  body.campaignId,
+            "ownerId":     user.uid,
+            "tenantId":    user.tenant_id,
+            "to":          msg.to,
+            "contactName": msg.contactName,
+            "message":     msg.message,
+            "senderId":    msg.senderId,
+            "channelType": "telegram",
+            "attempt":     0,
+        }
+        if msg.imageBase64:
+            job_data["imageBase64"] = msg.imageBase64
+            job_data["imageMime"]   = msg.imageMime or "image/jpeg"
+
         job_payload = json.dumps({
             "id":          msg.jobId,
             "attemptsMade": 0,
@@ -174,18 +192,7 @@ async def enqueue(
                 "attempts": 3,
                 "backoff":  {"type": "exponential", "delay": 3000},
             },
-            "data": {
-                "jobId":       msg.jobId,
-                "campaignId":  body.campaignId,
-                "ownerId":     user.uid,
-                "tenantId":    user.tenant_id,
-                "to":          msg.to,
-                "contactName": msg.contactName,
-                "message":     msg.message,
-                "senderId":    msg.senderId,
-                "channelType": "telegram",
-                "attempt":     0,
-            },
+            "data": job_data,
         }, ensure_ascii=False)
 
         if msg.delay > 0:

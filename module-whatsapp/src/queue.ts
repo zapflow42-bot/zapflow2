@@ -22,7 +22,7 @@ export function startWorker() {
   const worker = new Worker<DispatchJob>(
     "zf-whatsapp",
     async (job: Job<DispatchJob>) => {
-      const { to, message, senderId, campaignId, contactName, ownerId, tenantId } =
+      const { to, message, senderId, campaignId, contactName, ownerId, tenantId, imageBase64, imageMime } =
         job.data;
 
       const maskedTo = maskPhone(to);
@@ -32,12 +32,13 @@ export function startWorker() {
           jobId: job.id,
           campaignId,
           to: maskedTo,
+          hasImage: !!imageBase64,
           attempt: job.attemptsMade + 1,
         },
         "Processando envio WhatsApp"
       );
 
-      const ok = await sendMessage(senderId, to, message);
+      const ok = await sendMessage(senderId, to, message, imageBase64, imageMime);
       const field = ok ? "sent_count" : "fail_count";
 
       Promise.all([
@@ -124,3 +125,14 @@ const maskPhone = (n: string) => {
   if (!n || n.length <= 6) return "****";
   return n.slice(0, 4) + "****" + n.slice(-2);
 };
+
+export async function getQueueStats() {
+  const [waiting, active, completed, failed, delayed] = await Promise.all([
+    waQueue.getWaitingCount(),
+    waQueue.getActiveCount(),
+    waQueue.getCompletedCount(),
+    waQueue.getFailedCount(),
+    waQueue.getDelayedCount(),
+  ]);
+  return { waiting, active, completed, failed, delayed };
+}

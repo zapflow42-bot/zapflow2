@@ -230,10 +230,13 @@ async def confirm_code(session_id: str, code: str) -> None:
 
 
 # ── Enviar mensagem ──────────────────────────────────────────────────────────
-async def send_message(session_id: str, to: str, text: str) -> bool:
+async def send_message(session_id: str, to: str, text: str,
+                       image_base64: str | None = None,
+                       image_mime: str | None = None) -> bool:
     """
     Envia mensagem usando a sessão do chip.
     Restaura automaticamente do Redis se não estiver em memória.
+    Se image_base64 for fornecido, envia como foto com caption.
     Retorna True em sucesso, False em falha (worker lança exceção se False).
     """
     client = _sessions.get(session_id)
@@ -264,8 +267,16 @@ async def send_message(session_id: str, to: str, text: str) -> bool:
     try:
         # Telethon aceita número E.164 com ou sem +
         recipient = to if to.startswith("+") else f"+{to}"
-        await client.send_message(recipient, text)
-        logger.info("✓ Telegram enviado session=%s to=%s", session_id, _mask(to))
+        if image_base64:
+            import base64
+            from io import BytesIO
+            img_bytes = base64.b64decode(image_base64)
+            buf = BytesIO(img_bytes)
+            buf.name = "image.jpg" if (image_mime or "").endswith("jpeg") else "image.png"
+            await client.send_file(recipient, buf, caption=text or None)
+        else:
+            await client.send_message(recipient, text)
+        logger.info("✓ Telegram enviado session=%s to=%s hasImage=%s", session_id, _mask(to), bool(image_base64))
         return True
 
     except (AuthKeyUnregisteredError, UserDeactivatedBanError) as exc:
